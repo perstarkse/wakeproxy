@@ -1,0 +1,30 @@
+[package]
+name = "wol-web-proxy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+argon2 = "0.5"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["form", "macros", "ws"] }
+cookie = "0.18"
+futures-util = "0.3"
+http = "1"
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "tokio"] }
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
+tera = "1.20"
+thiserror = "2.0"
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["request-id", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+urlencoding = "2.1"
+
+[dev-dependencies]
+tokio-tungstenite = "0.28"

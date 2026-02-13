@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Wake Gateway Login</title>
+  <style>
+    :root {
+      --bg: #f4f6f1;
+      --panel: #fffdf7;
+      --ink: #19231a;
+      --muted: #516152;
+      --accent: #266d4b;
+      --danger: #b23c2f;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 20% 20%, #dae6d9 0%, transparent 45%),
+        radial-gradient(circle at 80% 0%, #f4e6d0 0%, transparent 35%),
+        var(--bg);
+      display: grid;
+      place-items: center;
+      padding: 1rem;
+    }
+
+    .card {
+      width: min(420px, 100%);
+      background: var(--panel);
+      border: 1px solid #dce5d6;
+      border-radius: 14px;
+      box-shadow: 0 12px 30px rgba(17, 44, 32, 0.09);
+      padding: 1.2rem;
+      animation: fade-in 240ms ease;
+    }
+
+    h1 { margin: 0 0 0.5rem; font-size: 1.3rem; }
+    p { margin: 0 0 1rem; color: var(--muted); }
+
+    .error {
+      min-height: 1.2rem;
+      color: var(--danger);
+      margin-bottom: 0.6rem;
+      font-size: 0.95rem;
+    }
+
+    label { display: block; margin-bottom: 0.4rem; font-weight: 600; }
+
+    input {
+      width: 100%;
+      font: inherit;
+      border: 1px solid #bcd0bf;
+      background: #fff;
+      border-radius: 8px;
+      padding: 0.7rem 0.8rem;
+      margin-bottom: 0.8rem;
+    }
+
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 8px;
+      padding: 0.75rem 0.9rem;
+      background: var(--accent);
+      color: white;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    @keyframes fade-in {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Wake Proxy Login</h1>
+    <p>Authenticate to wake and proxy requests to the upstream app.</p>
+    <div class="error">{{ error }}</div>
+    <form method="post" action="/_auth/login">
+      <input type="hidden" name="next" value="{{ next }}" />
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required autofocus autocomplete="current-password" />
+      <button type="submit">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>
