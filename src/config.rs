@@ -95,28 +95,16 @@ impl Config {
 
         let ready_cache_ttl =
             Duration::from_secs(parse_optional::<u64>(map, "WOL_PROXY_READY_CACHE_TTL", 5)?);
-        let session_ttl = Duration::from_secs(parse_optional::<u64>(
-            map,
-            "WOL_PROXY_SESSION_TTL_SECS",
-            43_200,
-        )?);
+        let session_ttl = parse_optional_secs(map, "WOL_PROXY_SESSION_TTL_SECS", 43_200)?;
         let cookie_secure = parse_optional::<bool>(map, "WOL_PROXY_COOKIE_SECURE", true)?;
         let login_max_failures = parse_optional::<usize>(map, "WOL_PROXY_LOGIN_MAX_FAILURES", 5)?;
-        let login_lockout = Duration::from_secs(parse_optional::<u64>(
-            map,
-            "WOL_PROXY_LOGIN_LOCKOUT_SECS",
-            60,
-        )?);
+        let login_lockout = parse_optional_secs(map, "WOL_PROXY_LOGIN_LOCKOUT_SECS", 60)?;
         let login_window = Duration::from_secs(parse_optional::<u64>(
             map,
             "WOL_PROXY_LOGIN_WINDOW_SECS",
             300,
         )?);
-        let edge_wait_timeout = Duration::from_secs(parse_optional::<u64>(
-            map,
-            "WOL_PROXY_EDGE_WAIT_TIMEOUT",
-            20,
-        )?);
+        let edge_wait_timeout = parse_optional_secs(map, "WOL_PROXY_EDGE_WAIT_TIMEOUT", 20)?;
         let trust_proxy_headers =
             parse_optional::<bool>(map, "WOL_PROXY_TRUST_PROXY_HEADERS", false)?;
         let trusted_proxy_ips = parse_ip_list(map, "WOL_PROXY_TRUSTED_PROXY_IPS")?;
@@ -204,6 +192,15 @@ where
     }
 }
 
+fn parse_optional_secs(
+    map: &HashMap<String, String>,
+    key: &'static str,
+    default: u64,
+) -> Result<Duration, ConfigError> {
+    let seconds = parse_optional::<u64>(map, key, default)?;
+    Ok(Duration::from_secs(seconds))
+}
+
 fn parse_mac(raw: &str) -> Result<[u8; 6], ConfigError> {
     let parts = raw.split(':').collect::<Vec<_>>();
     if parts.len() != 6 {
@@ -254,8 +251,15 @@ fn parse_ip_list(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::env;
+    use std::sync::{Mutex, OnceLock};
 
-    use super::Config;
+    use super::{Config, ConfigError};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn valid_env() -> HashMap<String, String> {
         let mut map = HashMap::new();
@@ -312,5 +316,148 @@ mod tests {
         env.insert("WOL_PROXY_UPSTREAM_HOST".to_string(), "fd00::1".to_string());
         let config = Config::from_map(&env).expect("valid config");
         assert_eq!(config.upstream_base_url(), "http://[fd00::1]:3000");
+    }
+
+    #[test]
+    fn from_env_reads_process_environment() {
+        let _guard = env_lock().lock().expect("lock env");
+
+        let pairs = valid_env().into_iter().collect::<Vec<_>>();
+        for (k, v) in &pairs {
+            unsafe { env::set_var(k, v) };
+        }
+
+        let config = Config::from_env().expect("env config");
+        assert_eq!(config.upstream_port, 3000);
+
+        for (k, _) in &pairs {
+            unsafe { env::remove_var(k) };
+        }
+    }
+
+    #[test]
+    fn config_fails_on_invalid_health_path() {
+        let mut env = valid_env();
+        env.insert("WOL_PROXY_HEALTH_PATH".to_string(), "health".to_string());
+        assert!(matches!(
+            Config::from_map(&env),
+            Err(ConfigError::InvalidValue {
+                name: "WOL_PROXY_HEALTH_PATH",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn config_fails_on_invalid_timeout_relationship() {
+        let mut env = valid_env();
+        env.insert("WOL_PROXY_WAKE_TIMEOUT".to_string(), "1".to_string());
+        env.insert("WOL_PROXY_POLL_INTERVAL".to_string(), "2".to_string());
+        assert!(Config::from_map(&env).is_err());
+    }
+
+    #[test]
+    fn config_fails_on_invalid_bind_addr() {
+        let mut env = valid_env();
+        env.insert("WOL_PROXY_BIND_ADDR".to_string(), "not-an-addr".to_string());
+        assert!(matches!(
+            Config::from_map(&env),
+            Err(ConfigError::InvalidValue {
+                name: "WOL_PROXY_BIND_ADDR",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn config_fails_on_short_session_secret() {
+        let mut env = valid_env();
+        env.insert("WOL_PROXY_SESSION_SECRET".to_string(), "short".to_string());
+        assert!(matches!(
+            Config::from_map(&env),
+            Err(ConfigError::InvalidValue {
+                name: "WOL_PROXY_SESSION_SECRET",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn config_fails_on_invalid_required_parse() {
+        let mut env = valid_env();
+        env.insert("WOL_PROXY_UPSTREAM_PORT".to_string(), "nope".to_string());
+        assert!(matches!(
+            Config::from_map(&env),
+            Err(ConfigError::InvalidValue {
+                name: "WOL_PROXY_UPSTREAM_PORT",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn config_fails_on_invalid_optional_parse() {
+        let mut env = valid_env();
+        env.insert(
+            "WOL_PROXY_LOGIN_WINDOW_SECS".to_string(),
+            "invalid".to_string(),
+        );
+        assert!(matches!(
+            Config::from_map(&env),
+            Err(ConfigError::InvalidValue {
+                name: "WOL_PROXY_LOGIN_WINDOW_SECS",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn config_fails_on_invalid_mac_segment() {
+        let mut env = valid_env();
+        env.insert(
+            "WOL_PROXY_WOL_MAC".to_string(),
+            "aa:bb:cc:dd:ee:gg".to_string(),
+        );
+        assert!(Config::from_map(&env).is_err());
+    }
+
+    #[test]
+    fn config_parses_trusted_proxy_ips_list() {
+        let mut env = valid_env();
+        env.insert(
+            "WOL_PROXY_TRUSTED_PROXY_IPS".to_string(),
+            "127.0.0.1, ::1, ,10.0.0.1".to_string(),
+        );
+        let config = Config::from_map(&env).expect("config");
+        assert_eq!(config.trusted_proxy_ips.len(), 3);
+    }
+
+    #[test]
+    fn config_fails_on_invalid_trusted_proxy_ip() {
+        let mut env = valid_env();
+        env.insert(
+            "WOL_PROXY_TRUSTED_PROXY_IPS".to_string(),
+            "127.0.0.1,not-an-ip".to_string(),
+        );
+        assert!(matches!(
+            Config::from_map(&env),
+            Err(ConfigError::InvalidValue {
+                name: "WOL_PROXY_TRUSTED_PROXY_IPS",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn config_parses_optional_overrides() {
+        let mut env = valid_env();
+        env.insert("WOL_PROXY_SESSION_TTL_SECS".to_string(), "120".to_string());
+        env.insert("WOL_PROXY_LOGIN_LOCKOUT_SECS".to_string(), "9".to_string());
+        env.insert("WOL_PROXY_EDGE_WAIT_TIMEOUT".to_string(), "7".to_string());
+
+        let config = Config::from_map(&env).expect("config");
+        assert_eq!(config.session_ttl.as_secs(), 120);
+        assert_eq!(config.login_lockout.as_secs(), 9);
+        assert_eq!(config.edge_wait_timeout.as_secs(), 7);
     }
 }

@@ -22,6 +22,7 @@ use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use reqwest::redirect::Policy;
+use tera::Tera;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -122,6 +123,41 @@ async fn unauthenticated_proxy_request_redirects_to_login() {
             .and_then(|v| v.to_str().ok()),
         Some("/_auth/login?next=%2Fdemo%3Fx%3D1")
     );
+}
+
+#[tokio::test]
+async fn login_page_renders_html() {
+    let upstream = spawn_upstream().await;
+    let config = build_config(upstream.addr.port(), "password-login-page");
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+
+    let response = client
+        .get(format!("{}/_auth/login?next=%2Fdemo", gateway.url()))
+        .send()
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body = response.text().await.expect("body");
+    assert!(body.contains("Wake Proxy Login"));
+}
+
+#[tokio::test]
+async fn gateway_health_endpoint_returns_ok() {
+    let upstream = spawn_upstream().await;
+    let config = build_config(upstream.addr.port(), "password-health");
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+
+    let response = client
+        .get(format!("{}/_health", gateway.url()))
+        .send()
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(response.text().await.expect("body"), "ok");
 }
 
 #[tokio::test]
@@ -228,6 +264,61 @@ async fn wake_timeout_returns_timeout_template() {
 }
 
 #[tokio::test]
+async fn edge_timeout_returns_still_waking_template() {
+    let upstream = spawn_upstream().await;
+    let mut config = build_config(upstream.addr.port(), "password-still-waking");
+    config.wake_timeout = Duration::from_secs(2);
+    config.poll_interval = Duration::from_millis(100);
+    config.edge_wait_timeout = Duration::from_millis(10);
+
+    let gateway = spawn_gateway(config, OkWakeSender, NeverReadyProbe).await;
+    let client = test_client();
+    let cookie = login_and_extract_cookie(&client, &gateway.url(), "password-still-waking").await;
+
+    let response = client
+        .get(format!("{}/demo", gateway.url()))
+        .header(COOKIE, cookie)
+        .send()
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+    let body = response.text().await.expect("body");
+    assert!(body.contains("still waking"));
+}
+
+#[tokio::test]
+async fn proxy_connect_error_returns_error_template() {
+    let unused_port = {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        drop(listener);
+        port
+    };
+
+    let config = build_config(unused_port, "password-proxy-error");
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+    let cookie = login_and_extract_cookie(&client, &gateway.url(), "password-proxy-error").await;
+
+    let response = client
+        .get(format!("{}/demo", gateway.url()))
+        .header(COOKIE, cookie)
+        .send()
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+    assert!(
+        response
+            .text()
+            .await
+            .expect("body")
+            .contains("Gateway error")
+    );
+}
+
+#[tokio::test]
 async fn spoofed_xff_does_not_bypass_login_lockout_by_default() {
     let upstream = spawn_upstream().await;
     let mut config = build_config(upstream.addr.port(), "password-6");
@@ -258,6 +349,119 @@ async fn spoofed_xff_does_not_bypass_login_lockout_by_default() {
         .expect("locked response");
 
     assert_eq!(locked.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn trusted_proxy_headers_use_forwarded_ip_for_rate_limit() {
+    let upstream = spawn_upstream().await;
+    let mut config = build_config(upstream.addr.port(), "password-trusted-forwarded");
+    config.trust_proxy_headers = true;
+    config.trusted_proxy_ips = vec!["127.0.0.1".parse().expect("ip")];
+    config.login_max_failures = 1;
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+
+    let first = client
+        .post(format!("{}/_auth/login", gateway.url()))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("x-forwarded-for", "8.8.8.8")
+        .body("password=wrong")
+        .send()
+        .await
+        .expect("first");
+    assert_eq!(first.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let locked = client
+        .post(format!("{}/_auth/login", gateway.url()))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("x-forwarded-for", "8.8.8.8")
+        .body("password=password-trusted-forwarded")
+        .send()
+        .await
+        .expect("locked");
+    assert_eq!(locked.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn malformed_forwarded_ip_falls_back_to_peer_ip() {
+    let upstream = spawn_upstream().await;
+    let mut config = build_config(upstream.addr.port(), "password-forwarded-fallback");
+    config.trust_proxy_headers = true;
+    config.trusted_proxy_ips = vec!["127.0.0.1".parse().expect("ip")];
+    config.login_max_failures = 1;
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+
+    let first = client
+        .post(format!("{}/_auth/login", gateway.url()))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("x-forwarded-for", "not-an-ip")
+        .body("password=wrong")
+        .send()
+        .await
+        .expect("first");
+    assert_eq!(first.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let locked = client
+        .post(format!("{}/_auth/login", gateway.url()))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("x-forwarded-for", "still-not-an-ip")
+        .body("password=password-forwarded-fallback")
+        .send()
+        .await
+        .expect("locked");
+    assert_eq!(locked.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn login_next_parameter_is_sanitized() {
+    let upstream = spawn_upstream().await;
+    let config = build_config(upstream.addr.port(), "password-sanitize");
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+
+    let response = client
+        .post(format!("{}/_auth/login", gateway.url()))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("password=password-sanitize&next=%2F%2Fevil.com")
+        .send()
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
+    assert_eq!(
+        response
+            .headers()
+            .get(LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("/")
+    );
+}
+
+#[tokio::test]
+async fn missing_template_returns_internal_server_error() {
+    let upstream = spawn_upstream().await;
+    let config = build_config(upstream.addr.port(), "password-template-missing");
+    // Use an empty Tera instance to intentionally trigger render errors.
+    let templates = Arc::new(Tera::default());
+    let gateway =
+        spawn_gateway_with_templates(config, OkWakeSender, AlwaysReadyProbe, templates).await;
+    let client = test_client();
+
+    let response = client
+        .get(format!("{}/_auth/login", gateway.url()))
+        .send()
+        .await
+        .expect("response");
+
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR
+    );
+    assert_eq!(
+        response.text().await.expect("body"),
+        "Template rendering failed"
+    );
 }
 
 #[tokio::test]
@@ -390,6 +594,29 @@ async fn authenticated_websocket_close_from_upstream_reaches_client() {
     }
 }
 
+#[tokio::test]
+async fn upgrade_with_non_upgrading_client_hits_upgrade_error_path() {
+    let upstream = spawn_upstream().await;
+    let config = build_config(upstream.addr.port(), "password-force-101");
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+    let cookie = login_and_extract_cookie(&client, &gateway.url(), "password-force-101").await;
+
+    // This request asks for upgrade semantics, but reqwest does not perform a
+    // websocket client upgrade, which drives the proxy's upgrade error branch.
+    let response = client
+        .get(format!("{}/force-101", gateway.url()))
+        .header(COOKIE, cookie)
+        .header("connection", "upgrade")
+        .header("upgrade", "websocket")
+        .send()
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::SWITCHING_PROTOCOLS);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+}
+
 fn build_config(upstream_port: u16, password: &str) -> Config {
     let salt = SaltString::generate(&mut OsRng);
     let password_hash = Argon2::default()
@@ -467,8 +694,21 @@ where
     S: WakePacketSender + 'static,
     P: ReadinessProbe + 'static,
 {
-    let config = Arc::new(config);
     let templates = Arc::new(web::load_templates().expect("templates"));
+    spawn_gateway_with_templates(config, sender, probe, templates).await
+}
+
+async fn spawn_gateway_with_templates<S, P>(
+    config: Config,
+    sender: S,
+    probe: P,
+    templates: Arc<Tera>,
+) -> ServerHandle
+where
+    S: WakePacketSender + 'static,
+    P: ReadinessProbe + 'static,
+{
+    let config = Arc::new(config);
     let wake = Arc::new(WakeCoordinator::new(
         WakeConfig {
             wake_timeout: config.wake_timeout,
@@ -565,6 +805,10 @@ async fn spawn_upstream() -> ServerHandle {
         ws.on_upgrade(handle_ws_echo)
     }
 
+    async fn force_101() -> impl IntoResponse {
+        http::StatusCode::SWITCHING_PROTOCOLS
+    }
+
     async fn handle_ws_echo(mut socket: WebSocket) {
         while let Some(message) = socket.next().await {
             let Ok(message) = message else {
@@ -601,6 +845,7 @@ async fn spawn_upstream() -> ServerHandle {
     let app = Router::new()
         .route("/health", get(health))
         .route("/ws", get(ws_echo))
+        .route("/force-101", get(force_101))
         .fallback(any(echo));
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

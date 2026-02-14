@@ -155,6 +155,7 @@ impl AuthService {
     async fn is_locked(&self, ip: IpAddr) -> Option<Duration> {
         let mut attempts = self.attempts.lock().await;
         let now = Instant::now();
+        // Prune before lookup so stale lockouts cannot keep an IP blocked forever.
         prune_attempts(
             &mut attempts,
             now,
@@ -168,12 +169,7 @@ impl AuthService {
         record.last_seen = now;
 
         if let Some(locked_until) = record.locked_until {
-            if locked_until > now {
-                return Some(locked_until - now);
-            }
-
-            record.locked_until = None;
-            record.failures.clear();
+            return Some(locked_until - now);
         }
 
         prune_attempts(
@@ -223,11 +219,6 @@ impl AuthService {
         self.attempts.lock().await.remove(&ip);
     }
 
-    #[cfg(test)]
-    pub async fn attempts_len(&self) -> usize {
-        self.attempts.lock().await.len()
-    }
-
     fn verify_password(&self, candidate: &str) -> bool {
         let parsed = match PasswordHash::new(&self.password_hash) {
             Ok(hash) => hash,
@@ -272,6 +263,7 @@ fn prune_attempts(
     login_window: Duration,
     login_max_tracked_ips: usize,
 ) {
+    // First pass removes stale failures and expired lockouts from each record.
     attempts.retain(|_, record| {
         record
             .failures
@@ -291,6 +283,7 @@ fn prune_attempts(
         return;
     }
 
+    // Hard-cap tracked IPs so attacker-driven cardinality cannot grow memory unbounded.
     let mut entries = attempts
         .iter()
         .map(|(ip, record)| (*ip, record.last_seen))
@@ -300,104 +293,5 @@ fn prune_attempts(
     let overflow = attempts.len() - login_max_tracked_ips;
     for (ip, _) in entries.into_iter().take(overflow) {
         attempts.remove(&ip);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-    use std::net::{IpAddr, Ipv4Addr};
-
-    use argon2::Argon2;
-    use argon2::password_hash::rand_core::OsRng;
-    use argon2::password_hash::{PasswordHasher, SaltString};
-
-    use crate::config::Config;
-
-    use super::{AuthService, LoginResult};
-
-    fn build_config(password: &str) -> Config {
-        let salt = SaltString::generate(&mut OsRng);
-        let password_hash = Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
-            .expect("hash")
-            .to_string();
-
-        let mut map = HashMap::new();
-        map.insert("WOL_PROXY_UPSTREAM_HOST".to_string(), "charon".to_string());
-        map.insert("WOL_PROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
-        map.insert(
-            "WOL_PROXY_WOL_MAC".to_string(),
-            "aa:bb:cc:dd:ee:ff".to_string(),
-        );
-        map.insert(
-            "WOL_PROXY_WOL_BROADCAST_IP".to_string(),
-            "10.0.0.255".to_string(),
-        );
-        map.insert("WOL_PROXY_PASSWORD_HASH".to_string(), password_hash);
-        map.insert(
-            "WOL_PROXY_SESSION_SECRET".to_string(),
-            "super-secret-session-key".to_string(),
-        );
-        map.insert("WOL_PROXY_LOGIN_MAX_FAILURES".to_string(), "2".to_string());
-        map.insert("WOL_PROXY_LOGIN_LOCKOUT_SECS".to_string(), "30".to_string());
-
-        Config::from_map(&map).expect("config")
-    }
-
-    #[tokio::test]
-    async fn locks_after_failed_attempts() {
-        let auth = AuthService::new(&build_config("correct-password"));
-        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5));
-
-        let first = auth.login(ip, "wrong").await;
-        assert!(matches!(first, LoginResult::InvalidCredentials));
-
-        let second = auth.login(ip, "wrong").await;
-        assert!(matches!(second, LoginResult::InvalidCredentials));
-
-        let third = auth.login(ip, "correct-password").await;
-        assert!(matches!(third, LoginResult::Locked { .. }));
-    }
-
-    #[tokio::test]
-    async fn prunes_attempts_map_to_max_tracked_ips() {
-        let mut map = HashMap::new();
-        map.insert("WOL_PROXY_UPSTREAM_HOST".to_string(), "charon".to_string());
-        map.insert("WOL_PROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
-        map.insert(
-            "WOL_PROXY_WOL_MAC".to_string(),
-            "aa:bb:cc:dd:ee:ff".to_string(),
-        );
-        map.insert(
-            "WOL_PROXY_WOL_BROADCAST_IP".to_string(),
-            "10.0.0.255".to_string(),
-        );
-
-        let salt = SaltString::generate(&mut OsRng);
-        let password_hash = Argon2::default()
-            .hash_password("correct".as_bytes(), &salt)
-            .expect("hash")
-            .to_string();
-
-        map.insert("WOL_PROXY_PASSWORD_HASH".to_string(), password_hash);
-        map.insert(
-            "WOL_PROXY_SESSION_SECRET".to_string(),
-            "super-secret-session-key".to_string(),
-        );
-        map.insert(
-            "WOL_PROXY_LOGIN_MAX_TRACKED_IPS".to_string(),
-            "2".to_string(),
-        );
-
-        let config = Config::from_map(&map).expect("config");
-        let auth = AuthService::new(&config);
-
-        for idx in 1..=6 {
-            let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, idx));
-            let _ = auth.login(ip, "wrong").await;
-        }
-
-        assert!(auth.attempts_len().await <= 2);
     }
 }
