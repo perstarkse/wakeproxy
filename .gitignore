@@ -13,3 +13,4 @@ devenv.local.yaml
 # Added by cargo
 
 /target
+result
