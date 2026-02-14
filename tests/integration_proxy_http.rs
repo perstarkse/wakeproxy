@@ -1,13 +1,15 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::header::COOKIE;
+use tera::Tera;
 use tokio::net::TcpListener;
 
 mod common;
 
 use common::{
     AlwaysReadyProbe, OkWakeSender, build_config, login_and_extract_cookie, spawn_gateway,
-    spawn_upstream, test_client,
+    spawn_gateway_with_templates, spawn_upstream, test_client,
 };
 
 #[tokio::test]
@@ -66,6 +68,40 @@ async fn proxy_connect_error_returns_error_template() {
             .await
             .expect("body")
             .contains("Gateway error")
+    );
+}
+
+#[tokio::test]
+async fn proxy_connect_error_with_missing_error_template_returns_plain_500() {
+    let unused_port = {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        drop(listener);
+        port
+    };
+
+    let config = build_config(unused_port, "password-proxy-missing-template");
+    let templates = Arc::new(Tera::default());
+    let gateway =
+        spawn_gateway_with_templates(config, OkWakeSender, AlwaysReadyProbe, templates).await;
+    let client = test_client();
+    let cookie =
+        login_and_extract_cookie(&client, &gateway.url(), "password-proxy-missing-template").await;
+
+    let response = client
+        .get(format!("{}/demo", gateway.url()))
+        .header(COOKIE, cookie)
+        .send()
+        .await
+        .expect("response");
+
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR
+    );
+    assert_eq!(
+        response.text().await.expect("body"),
+        "Template rendering failed"
     );
 }
 

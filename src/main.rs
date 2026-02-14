@@ -3,6 +3,7 @@ use std::sync::Arc;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
+use thiserror::Error;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -11,8 +12,26 @@ use wol_web_proxy::readiness::SystemReadinessProbe;
 use wol_web_proxy::wake::{UdpWakeSender, WakeConfig, WakeCoordinator};
 use wol_web_proxy::web::{self, AppState};
 
+#[derive(Debug, Error)]
+pub enum StartupError {
+    #[error(transparent)]
+    Config(#[from] wol_web_proxy::config::ConfigError),
+    #[error(transparent)]
+    Templates(#[from] wol_web_proxy::web::TemplateLoadError),
+    #[error(transparent)]
+    Readiness(#[from] wol_web_proxy::readiness::ReadinessError),
+    #[error("failed to bind listener at {addr}")]
+    Bind {
+        addr: std::net::SocketAddr,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("server exited with error")]
+    Serve(#[source] std::io::Error),
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), StartupError> {
     init_tracing();
 
     let config = Arc::new(Config::from_env()?);
@@ -40,13 +59,20 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState::new(config, templates, wake_coordinator, http_client);
     let app = web::build_router(state.clone());
 
-    let listener = TcpListener::bind(state.config.bind_addr).await?;
-    info!(bind_addr = %state.config.bind_addr, "wol-web-proxy listening");
+    let bind_addr = state.config.bind_addr;
+    let listener = TcpListener::bind(bind_addr)
+        .await
+        .map_err(|source| StartupError::Bind {
+            addr: bind_addr,
+            source,
+        })?;
+    info!(bind_addr = %bind_addr, "wol-web-proxy listening");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .await?;
+    .await
+    .map_err(StartupError::Serve)?;
 
     Ok(())
 }

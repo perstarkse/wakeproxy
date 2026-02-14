@@ -13,6 +13,7 @@ use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use serde::Deserialize;
 use tera::{Context, Tera};
+use thiserror::Error;
 use tower::ServiceBuilder;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
@@ -20,7 +21,7 @@ use tracing::{error, info, warn};
 
 use crate::auth::{AuthService, LoginResult, append_set_cookie};
 use crate::config::Config;
-use crate::proxy::ProxyService;
+use crate::proxy::{ProxyError, ProxyService};
 use crate::wake::{EnsureReadyResult, WakeCoordinator};
 
 #[derive(Clone)]
@@ -30,6 +31,34 @@ pub struct AppState {
     auth: Arc<AuthService>,
     wake: Arc<WakeCoordinator>,
     proxy: Arc<ProxyService>,
+}
+
+#[derive(Debug, Error)]
+pub enum TemplateLoadError {
+    #[error("failed to load template {name}")]
+    Load {
+        name: &'static str,
+        #[source]
+        source: tera::Error,
+    },
+}
+
+#[derive(Debug, Error)]
+pub enum TemplateRenderError {
+    #[error("failed to render template {name}")]
+    Render {
+        name: &'static str,
+        #[source]
+        source: tera::Error,
+    },
+}
+
+#[derive(Debug, Error)]
+pub enum AppError {
+    #[error(transparent)]
+    Proxy(#[from] ProxyError),
+    #[error(transparent)]
+    Template(#[from] TemplateRenderError),
 }
 
 impl AppState {
@@ -52,23 +81,38 @@ impl AppState {
     }
 }
 
-pub fn load_templates() -> anyhow::Result<Tera> {
+pub fn load_templates() -> Result<Tera, TemplateLoadError> {
     let mut tera = Tera::default();
-    tera.add_raw_template("_layout.html", include_str!("../templates/_layout.html"))?;
-    tera.add_raw_template("login.html", include_str!("../templates/login.html"))?;
-    tera.add_raw_template(
+    add_template(
+        &mut tera,
+        "_layout.html",
+        include_str!("../templates/_layout.html"),
+    )?;
+    add_template(
+        &mut tera,
+        "login.html",
+        include_str!("../templates/login.html"),
+    )?;
+    add_template(
+        &mut tera,
         "still-waking.html",
         include_str!("../templates/still-waking.html"),
     )?;
-    tera.add_raw_template(
+    add_template(
+        &mut tera,
         "wake-timeout.html",
         include_str!("../templates/wake-timeout.html"),
     )?;
-    tera.add_raw_template(
+    add_template(
+        &mut tera,
         "upstream-unhealthy.html",
         include_str!("../templates/upstream-unhealthy.html"),
     )?;
-    tera.add_raw_template("error.html", include_str!("../templates/error.html"))?;
+    add_template(
+        &mut tera,
+        "error.html",
+        include_str!("../templates/error.html"),
+    )?;
     Ok(tera)
 }
 
@@ -248,12 +292,7 @@ pub async fn proxy_handler(
 
     match state.proxy.forward(request, client_ip, trust_proxy).await {
         Ok(response) => response,
-        Err(error) => {
-            error!(?error, "proxy request failed");
-            let mut context = Context::new();
-            context.insert("error", &error.to_string());
-            render_template(&state, "error.html", context, StatusCode::BAD_GATEWAY)
-        }
+        Err(error) => app_error_response(&state, error.into()),
     }
 }
 
@@ -271,22 +310,64 @@ fn render_login(
 
 fn render_template(
     state: &AppState,
-    name: &str,
+    name: &'static str,
     context: Context,
     status: StatusCode,
 ) -> axum::response::Response {
-    match state.templates.render(name, &context) {
-        Ok(rendered) => {
-            let mut response = rendered.into_response();
-            *response.status_mut() = status;
-            response.headers_mut().insert(
-                axum::http::header::CONTENT_TYPE,
-                HeaderValue::from_static("text/html; charset=utf-8"),
-            );
-            response
-        }
+    match try_render_template(state, name, context, status) {
+        Ok(response) => response,
         Err(error) => {
             error!(template = name, ?error, "template render failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Template rendering failed",
+            )
+                .into_response()
+        }
+    }
+}
+
+fn add_template(
+    tera: &mut Tera,
+    name: &'static str,
+    content: &'static str,
+) -> Result<(), TemplateLoadError> {
+    tera.add_raw_template(name, content)
+        .map_err(|source| TemplateLoadError::Load { name, source })
+}
+
+fn try_render_template(
+    state: &AppState,
+    name: &'static str,
+    context: Context,
+    status: StatusCode,
+) -> Result<axum::response::Response, TemplateRenderError> {
+    let rendered = state
+        .templates
+        .render(name, &context)
+        .map_err(|source| TemplateRenderError::Render { name, source })?;
+    let mut response = rendered.into_response();
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    Ok(response)
+}
+
+fn app_error_response(state: &AppState, error: AppError) -> axum::response::Response {
+    match error {
+        AppError::Proxy(proxy_error) => {
+            error!(?proxy_error, "proxy request failed");
+            let mut context = Context::new();
+            context.insert("error", &proxy_error.to_string());
+            match try_render_template(state, "error.html", context, StatusCode::BAD_GATEWAY) {
+                Ok(response) => response,
+                Err(template_error) => app_error_response(state, template_error.into()),
+            }
+        }
+        AppError::Template(template_error) => {
+            error!(?template_error, "template render failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Template rendering failed",

@@ -39,6 +39,19 @@ fn build_config(password: &str) -> Config {
     Config::from_map(&map).expect("config")
 }
 
+async fn login_cookie(auth: &AuthService, ip: IpAddr, password: &str) -> String {
+    match auth.login(ip, password).await {
+        LoginResult::Success { cookie_header } => cookie_header
+            .to_str()
+            .expect("cookie header")
+            .split(';')
+            .next()
+            .expect("cookie pair")
+            .to_string(),
+        other => panic!("expected success login, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn locks_after_failed_attempts() {
     let auth = AuthService::new(&build_config("correct-password"));
@@ -213,4 +226,53 @@ async fn many_ips_exercise_attempt_pruning_path() {
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, idx));
         let _ = auth.login(ip, "wrong").await;
     }
+}
+
+#[tokio::test]
+async fn authenticate_headers_returns_none_for_expired_session() {
+    let mut config = build_config("correct-password");
+    config.session_ttl = Duration::from_secs(1);
+    let auth = AuthService::new(&config);
+    let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 44));
+
+    let cookie_pair = login_cookie(&auth, ip, "correct-password").await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(COOKIE, cookie_pair.parse().expect("cookie"));
+
+    assert!(auth.authenticate_headers(&headers).await.is_none());
+}
+
+#[tokio::test]
+async fn authenticate_headers_prunes_expired_sessions_and_keeps_active_token() {
+    let mut config = build_config("correct-password");
+    config.session_ttl = Duration::from_secs(1);
+    let auth = AuthService::new(&config);
+    let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 45));
+
+    let stale_cookie = login_cookie(&auth, ip, "correct-password").await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let fresh_cookie = login_cookie(&auth, ip, "correct-password").await;
+
+    let mut stale_headers = HeaderMap::new();
+    stale_headers.insert(COOKIE, stale_cookie.parse().expect("cookie"));
+    assert!(auth.authenticate_headers(&stale_headers).await.is_none());
+
+    let mut fresh_headers = HeaderMap::new();
+    fresh_headers.insert(COOKIE, fresh_cookie.parse().expect("cookie"));
+    assert!(auth.authenticate_headers(&fresh_headers).await.is_some());
+}
+
+#[tokio::test]
+async fn malformed_password_hash_causes_invalid_credentials_result() {
+    let mut config = build_config("correct-password");
+    config.password_hash = "not-a-valid-password-hash".to_string();
+    let auth = AuthService::new(&config);
+    let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 46));
+
+    assert!(matches!(
+        auth.login(ip, "correct-password").await,
+        LoginResult::InvalidCredentials
+    ));
 }

@@ -4,10 +4,19 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::extract::Request;
 use axum::routing::{any, get};
+use thiserror::Error;
 use tokio::net::TcpListener;
 
+#[derive(Debug, Error)]
+enum ExampleError {
+    #[error("invalid port argument")]
+    ParsePort(#[from] std::num::ParseIntError),
+    #[error("i/o error")]
+    Io(#[from] std::io::Error),
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), ExampleError> {
     let port = std::env::args()
         .nth(1)
         .as_deref()

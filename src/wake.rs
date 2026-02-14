@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use thiserror::Error;
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, watch};
 use tracing::{error, info};
@@ -42,9 +43,17 @@ pub struct WakeConfig {
     pub ready_cache_ttl: Duration,
 }
 
+#[derive(Debug, Error)]
+pub enum WakeSendError {
+    #[error("failed to send wake packet")]
+    Io(#[from] std::io::Error),
+    #[error("{0}")]
+    Message(String),
+}
+
 #[async_trait]
 pub trait WakePacketSender: Send + Sync {
-    async fn send_magic_packet(&self) -> anyhow::Result<()>;
+    async fn send_magic_packet(&self) -> Result<(), WakeSendError>;
 }
 
 #[derive(Clone)]
@@ -66,7 +75,7 @@ impl UdpWakeSender {
 
 #[async_trait]
 impl WakePacketSender for UdpWakeSender {
-    async fn send_magic_packet(&self) -> anyhow::Result<()> {
+    async fn send_magic_packet(&self) -> Result<(), WakeSendError> {
         let target = SocketAddr::new(IpAddr::V4(self.broadcast_ip), self.broadcast_port);
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
         socket.set_broadcast(true)?;
@@ -303,7 +312,7 @@ mod tests {
 
     use super::{
         EnsureReadyResult, UdpWakeSender, WakeConfig, WakeCoordinator, WakeCycle, WakeOutcome,
-        WakePacketSender, WakeState,
+        WakePacketSender, WakeSendError, WakeState,
     };
 
     #[derive(Clone)]
@@ -313,7 +322,7 @@ mod tests {
 
     #[async_trait]
     impl WakePacketSender for MockWakeSender {
-        async fn send_magic_packet(&self) -> anyhow::Result<()> {
+        async fn send_magic_packet(&self) -> Result<(), WakeSendError> {
             self.sends.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
@@ -343,8 +352,8 @@ mod tests {
 
     #[async_trait]
     impl WakePacketSender for FailingWakeSender {
-        async fn send_magic_packet(&self) -> anyhow::Result<()> {
-            anyhow::bail!("sender failure")
+        async fn send_magic_packet(&self) -> Result<(), WakeSendError> {
+            Err(WakeSendError::Message("sender failure".to_string()))
         }
     }
 

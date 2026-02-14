@@ -8,7 +8,9 @@ use axum::routing::get;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use wol_web_proxy::readiness::ReadinessProbe;
-use wol_web_proxy::wake::{EnsureReadyResult, WakeConfig, WakeCoordinator, WakePacketSender};
+use wol_web_proxy::wake::{
+    EnsureReadyResult, WakeConfig, WakeCoordinator, WakePacketSender, WakeSendError,
+};
 
 #[derive(Clone)]
 struct MockWakeSender {
@@ -17,7 +19,7 @@ struct MockWakeSender {
 
 #[async_trait]
 impl WakePacketSender for MockWakeSender {
-    async fn send_magic_packet(&self) -> anyhow::Result<()> {
+    async fn send_magic_packet(&self) -> Result<(), WakeSendError> {
         self.sends.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }

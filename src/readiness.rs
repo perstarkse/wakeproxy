@@ -1,8 +1,15 @@
 use async_trait::async_trait;
 use reqwest::Client;
+use thiserror::Error;
 use tokio::process::Command;
 
 use crate::config::Config;
+
+#[derive(Debug, Error)]
+pub enum ReadinessError {
+    #[error("failed to build readiness HTTP client")]
+    ClientBuild(#[source] reqwest::Error),
+}
 
 #[async_trait]
 pub trait ReadinessProbe: Send + Sync {
@@ -19,10 +26,13 @@ pub struct SystemReadinessProbe {
 }
 
 impl SystemReadinessProbe {
-    pub fn new(config: &Config) -> anyhow::Result<Self> {
+    pub fn new(config: &Config) -> Result<Self, ReadinessError> {
         let health_url = format!("{}{}", config.upstream_base_url(), config.health_path);
 
-        let client = Client::builder().timeout(config.poll_interval).build()?;
+        let client = Client::builder()
+            .timeout(config.poll_interval)
+            .build()
+            .map_err(ReadinessError::ClientBuild)?;
 
         Ok(Self {
             host: config.upstream_host.clone(),

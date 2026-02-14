@@ -29,7 +29,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use wol_web_proxy::config::Config;
 use wol_web_proxy::readiness::ReadinessProbe;
-use wol_web_proxy::wake::{WakeConfig, WakeCoordinator, WakePacketSender};
+use wol_web_proxy::wake::{WakeConfig, WakeCoordinator, WakePacketSender, WakeSendError};
 use wol_web_proxy::web::{self, AppState};
 
 pub struct ServerHandle {
@@ -86,7 +86,7 @@ pub struct OkWakeSender;
 
 #[async_trait]
 impl WakePacketSender for OkWakeSender {
-    async fn send_magic_packet(&self) -> anyhow::Result<()> {
+    async fn send_magic_packet(&self) -> Result<(), WakeSendError> {
         Ok(())
     }
 }
@@ -96,8 +96,10 @@ pub struct FailingWakeSender;
 
 #[async_trait]
 impl WakePacketSender for FailingWakeSender {
-    async fn send_magic_packet(&self) -> anyhow::Result<()> {
-        anyhow::bail!("simulated wake sender failure")
+    async fn send_magic_packet(&self) -> Result<(), WakeSendError> {
+        Err(WakeSendError::Message(
+            "simulated wake sender failure".to_string(),
+        ))
     }
 }
 

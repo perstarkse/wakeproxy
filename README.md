@@ -43,22 +43,24 @@ cargo test
 
 ## Coverage
 
-Run coverage inside the devenv shell (same command and threshold used by CI/hooks):
+Run coverage inside the devenv shell (same command and threshold used by hooks):
 
 ```bash
 devenv shell -- cargo llvm-cov --workspace --all-features --summary-only --fail-under-lines 90
 ```
 
-## CI / pre-commit checks
+## Pre-commit checks
 
-Use `devenv shell -- ci` for the canonical pipeline (`fmt`, `clippy`, `test`, coverage).
-`devenv test` runs configured git hooks, which enforce the same checks:
+`devenv test` runs the configured hook suite (`fmt`, `clippy`, `test`, coverage, local e2e smoke):
 
 ```bash
-devenv shell -- ci
-
-# or run the hook suite
 devenv test
+```
+
+For verbose per-hook output (commands, logs, durations), run:
+
+```bash
+devenv shell -- prek run --all-files -v
 ```
 
 ## Local E2E Smoke Test

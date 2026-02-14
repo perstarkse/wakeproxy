@@ -224,7 +224,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use axum::body::Body;
-    use axum::http::header::HOST;
+    use axum::http::header::{CONNECTION, HOST, UPGRADE};
     use axum::http::{HeaderMap, HeaderValue, Request, Uri};
     use hyper_util::client::legacy::Client;
     use hyper_util::client::legacy::connect::HttpConnector;
@@ -236,6 +236,7 @@ mod tests {
     use super::apply_forwarded_headers;
     use super::bridge_upgrade_streams;
     use super::build_upstream_uri;
+    use super::strip_hop_by_hop_headers;
 
     fn build_config_with_host(host: &str) -> Config {
         let mut map = HashMap::new();
@@ -270,6 +271,40 @@ mod tests {
             async { Err(()) },
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn covers_upstream_upgrade_error_branch() {
+        let (client_stream, _other_end) = tokio::io::duplex(16);
+
+        bridge_upgrade_streams::<_, _, tokio::io::DuplexStream, tokio::io::DuplexStream, (), ()>(
+            async move { Ok(client_stream) },
+            async { Err(()) },
+        )
+        .await;
+    }
+
+    #[test]
+    fn strip_hop_by_hop_headers_preserves_upgrade_token_when_requested() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONNECTION,
+            HeaderValue::from_static("upgrade, x-custom-hop"),
+        );
+        headers.insert(UPGRADE, HeaderValue::from_static("websocket"));
+        headers.insert("x-custom-hop", HeaderValue::from_static("drop-me"));
+
+        strip_hop_by_hop_headers(&mut headers, true);
+
+        assert_eq!(
+            headers.get(CONNECTION).and_then(|v| v.to_str().ok()),
+            Some("upgrade, x-custom-hop")
+        );
+        assert_eq!(
+            headers.get(UPGRADE).and_then(|v| v.to_str().ok()),
+            Some("websocket")
+        );
+        assert!(headers.get("x-custom-hop").is_none());
     }
 
     #[test]
