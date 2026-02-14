@@ -1,13 +1,13 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Wake Timeout</title>
-</head>
-<body>
-  <h1>Upstream did not wake in time</h1>
-  <p>Cycle {{ cycle_id }} timed out after {{ timeout_secs }} seconds.</p>
-  <p>Wait a moment, then retry your request.</p>
-</body>
-</html>
+{% extends "_layout.html" %}
+
+{% block title %}Wake Timeout{% endblock title %}
+
+{% block body %}
+<h1>Upstream did not wake in time</h1>
+<p class="muted">Wake cycle <strong>{{ cycle_id }}</strong> timed out after {{ timeout_secs }} seconds.</p>
+<p class="alert warn">The upstream host may still be booting. Wait a moment, then retry your request.</p>
+<div class="actions">
+  <a class="button-link" href="javascript:location.reload()">Retry request</a>
+  <a class="button-link secondary" href="/_auth/login">Back to login</a>
+</div>
+{% endblock body %}

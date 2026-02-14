@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Wake Gateway{% endblock title %}</title>
+  <style>
+    :root {
+      --bg: #eef4ed;
+      --panel: #fffdf8;
+      --border: #d4e1d1;
+      --ink: #1b2a20;
+      --muted: #536453;
+      --accent: #2d6f4c;
+      --warn: #a16f20;
+      --danger: #aa3d2f;
+      --code-bg: #f3f8f1;
+      --shadow: 0 14px 34px rgba(20, 45, 32, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 0 0, #dce8d8 0%, transparent 40%),
+        radial-gradient(circle at 100% 0, #f4e5cb 0%, transparent 36%),
+        var(--bg);
+    }
+
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 1rem;
+    }
+
+    .card {
+      width: min(540px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      padding: 1.25rem;
+      animation: fade-up 220ms ease;
+    }
+
+    h1 {
+      margin: 0;
+      line-height: 1.2;
+      font-size: 1.5rem;
+    }
+
+    p {
+      margin: 0;
+      line-height: 1.5;
+    }
+
+    .stack {
+      display: grid;
+      gap: 0.85rem;
+    }
+
+    .muted { color: var(--muted); }
+
+    .status-badge {
+      display: inline-block;
+      border-radius: 999px;
+      border: 1px solid #c8d9c6;
+      background: #edf5ea;
+      padding: 0.15rem 0.55rem;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      font-size: 0.85rem;
+      color: #345441;
+    }
+
+    .alert {
+      border-radius: 10px;
+      padding: 0.6rem 0.75rem;
+      min-height: 2.35rem;
+      border: 1px solid #d8e4d6;
+      background: #f4faf2;
+      color: #2c5139;
+    }
+
+    .alert.warn {
+      border-color: #e7d8b3;
+      background: #fff8e9;
+      color: var(--warn);
+    }
+
+    .alert.danger {
+      border-color: #ecc7c1;
+      background: #fff2f0;
+      color: var(--danger);
+    }
+
+    .alert code {
+      background: transparent;
+      padding: 0;
+    }
+
+    form {
+      display: grid;
+      gap: 0.65rem;
+    }
+
+    label {
+      font-weight: 600;
+      font-size: 0.95rem;
+    }
+
+    input {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid #b8cdbb;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+      padding: 0.7rem 0.8rem;
+    }
+
+    input:focus {
+      outline: 2px solid #95bc9f;
+      outline-offset: 1px;
+    }
+
+    button,
+    .button-link {
+      display: inline-block;
+      border: 0;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #fff;
+      font: inherit;
+      font-weight: 600;
+      padding: 0.72rem 0.95rem;
+      text-decoration: none;
+      text-align: center;
+      cursor: pointer;
+    }
+
+    .button-link.secondary {
+      border: 1px solid #a7bda7;
+      background: #f2f7ef;
+      color: #2c5038;
+    }
+
+    .actions {
+      display: flex;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      margin-top: 0.25rem;
+    }
+
+    pre {
+      margin: 0;
+      padding: 0.7rem 0.8rem;
+      border-radius: 10px;
+      border: 1px solid #d5e1d2;
+      background: var(--code-bg);
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+      font-size: 0.9rem;
+    }
+
+    @keyframes fade-up {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+  {% block head_extra %}{% endblock head_extra %}
+</head>
+<body>
+  <main class="shell">
+    <section class="card stack">
+      {% block body %}{% endblock body %}
+    </section>
+  </main>
+</body>
+</html>
