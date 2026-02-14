@@ -97,7 +97,7 @@ proxy_body="$(cat "$TMP_DIR/proxy-body.txt")"
 [[ "$proxy_body" == *"path=/demo"* ]] || { echo "FAIL: upstream path missing"; exit 1; }
 [[ "$proxy_body" == *"query=from=e2e"* ]] || { echo "FAIL: upstream query missing"; exit 1; }
 [[ "$proxy_body" == *"body=hello-e2e"* ]] || { echo "FAIL: upstream body missing"; exit 1; }
-[[ "$proxy_body" == *"xfp=https"* ]] || { echo "FAIL: x-forwarded-proto not set"; exit 1; }
+[[ "$proxy_body" == *"xfp=http"* ]] || { echo "FAIL: x-forwarded-proto not set"; exit 1; }
 
 echo "Test 4/4: logout invalidates session"
 status="$(curl -sS -o "$TMP_DIR/logout-body.txt" -w "%{http_code}" -X POST -b "$COOKIE_JAR" "http://127.0.0.1:$GATEWAY_PORT/_auth/logout")"

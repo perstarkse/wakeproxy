@@ -1,16 +1,21 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Form, Query, Request, State};
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect};
+use axum::routing::{any, get, post};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use serde::Deserialize;
 use tera::{Context, Tera};
+use tower::ServiceBuilder;
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn};
 
 use crate::auth::{AuthService, LoginResult, append_set_cookie};
@@ -48,8 +53,47 @@ impl AppState {
 }
 
 pub fn load_templates() -> anyhow::Result<Tera> {
-    let tera = Tera::new("templates/**/*.html")?;
+    let mut tera = Tera::default();
+    tera.add_raw_template("_layout.html", include_str!("../templates/_layout.html"))?;
+    tera.add_raw_template("login.html", include_str!("../templates/login.html"))?;
+    tera.add_raw_template(
+        "still-waking.html",
+        include_str!("../templates/still-waking.html"),
+    )?;
+    tera.add_raw_template(
+        "wake-timeout.html",
+        include_str!("../templates/wake-timeout.html"),
+    )?;
+    tera.add_raw_template(
+        "upstream-unhealthy.html",
+        include_str!("../templates/upstream-unhealthy.html"),
+    )?;
+    tera.add_raw_template("error.html", include_str!("../templates/error.html"))?;
     Ok(tera)
+}
+
+pub fn build_router(state: AppState) -> Router {
+    let protected_router =
+        Router::new()
+            .fallback(any(proxy_handler))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth_guard_middleware,
+            ));
+
+    Router::new()
+        .route("/_auth/login", get(login_page))
+        .route("/_auth/login", post(login_submit))
+        .route("/_auth/logout", post(logout_submit))
+        .route("/_health", get(gateway_health))
+        .merge(protected_router)
+        .layer(
+            ServiceBuilder::new()
+                .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+                .layer(PropagateRequestIdLayer::x_request_id())
+                .layer(TraceLayer::new_for_http()),
+        )
+        .with_state(state)
 }
 
 #[derive(Deserialize)]
@@ -155,6 +199,7 @@ pub async fn proxy_handler(
     headers: HeaderMap,
     request: Request,
 ) -> axum::response::Response {
+    let trust_proxy = should_trust_proxy(&state.config, addr);
     let client_ip = extract_client_ip(&state.config, &headers, addr);
 
     match state
@@ -201,7 +246,7 @@ pub async fn proxy_handler(
         }
     }
 
-    match state.proxy.forward(request, client_ip).await {
+    match state.proxy.forward(request, client_ip, trust_proxy).await {
         Ok(response) => response,
         Err(error) => {
             error!(?error, "proxy request failed");
@@ -252,7 +297,7 @@ fn render_template(
 }
 
 fn extract_client_ip(config: &Config, headers: &HeaderMap, connect_info: SocketAddr) -> IpAddr {
-    if !config.trust_proxy_headers || !config.trusted_proxy_ips.contains(&connect_info.ip()) {
+    if !should_trust_proxy(config, connect_info) {
         return connect_info.ip();
     }
 
@@ -268,10 +313,12 @@ fn extract_client_ip(config: &Config, headers: &HeaderMap, connect_info: SocketA
     connect_info.ip()
 }
 
+fn should_trust_proxy(config: &Config, connect_info: SocketAddr) -> bool {
+    config.trust_proxy_headers && config.trusted_proxy_ips.contains(&connect_info.ip())
+}
+
 fn sanitize_next(next: Option<&str>) -> Option<String> {
-    let Some(next) = next else {
-        return None;
-    };
+    let next = next?;
 
     if next.starts_with('/') && !next.starts_with("//") {
         Some(next.to_string())

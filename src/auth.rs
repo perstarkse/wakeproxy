@@ -26,7 +26,9 @@ pub struct AuthService {
     login_lockout: Duration,
     login_window: Duration,
     login_max_tracked_ips: usize,
+    session_prune_interval: Duration,
     sessions: Arc<RwLock<HashMap<String, SessionRecord>>>,
+    next_session_prune: Arc<Mutex<Instant>>,
     attempts: Arc<Mutex<HashMap<IpAddr, AttemptRecord>>>,
 }
 
@@ -61,6 +63,9 @@ impl AttemptRecord {
 
 impl AuthService {
     pub fn new(config: &Config) -> Self {
+        let session_prune_interval = Duration::from_secs(30).min(config.session_ttl);
+        let now = Instant::now();
+
         Self {
             password_hash: config.password_hash.clone(),
             session_secret: config.session_secret.clone(),
@@ -70,7 +75,9 @@ impl AuthService {
             login_lockout: config.login_lockout,
             login_window: config.login_window,
             login_max_tracked_ips: config.login_max_tracked_ips,
+            session_prune_interval,
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            next_session_prune: Arc::new(Mutex::new(now + session_prune_interval)),
             attempts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -97,17 +104,28 @@ impl AuthService {
     pub async fn authenticate_headers(&self, headers: &HeaderMap) -> Option<()> {
         let token = parse_cookie(headers, SESSION_COOKIE_NAME)?;
         let token_hash = hash_token(&self.session_secret, &token);
-
-        let mut sessions = self.sessions.write().await;
         let now = Instant::now();
 
-        sessions.retain(|_, record| record.expires_at > now);
+        self.maybe_prune_sessions(now).await;
 
-        if let Some(record) = sessions.get_mut(&token_hash) {
+        {
+            let sessions = self.sessions.read().await;
+            let record = sessions.get(&token_hash)?;
+
+            if record.expires_at <= now {
+                return None;
+            }
+        }
+
+        let mut sessions = self.sessions.write().await;
+        if let Some(record) = sessions.get_mut(&token_hash)
+            && record.expires_at > now
+        {
             record.expires_at = now + self.session_ttl;
             return Some(());
         }
 
+        sessions.remove(&token_hash);
         None
     }
 
@@ -219,6 +237,27 @@ impl AuthService {
         self.attempts.lock().await.remove(&ip);
     }
 
+    async fn maybe_prune_sessions(&self, now: Instant) {
+        let should_prune = {
+            let mut next_prune = self.next_session_prune.lock().await;
+            if now < *next_prune {
+                false
+            } else {
+                *next_prune = now + self.session_prune_interval;
+                true
+            }
+        };
+
+        if !should_prune {
+            return;
+        }
+
+        self.sessions
+            .write()
+            .await
+            .retain(|_, record| record.expires_at > now);
+    }
+
     fn verify_password(&self, candidate: &str) -> bool {
         let parsed = match PasswordHash::new(&self.password_hash) {
             Ok(hash) => hash,
@@ -238,12 +277,11 @@ pub fn append_set_cookie(headers: &mut HeaderMap, cookie_value: HeaderValue) {
 pub fn parse_cookie(headers: &HeaderMap, key: &str) -> Option<String> {
     let cookie_header = headers.get(COOKIE)?.to_str().ok()?;
 
-    cookie_header
-        .split(';')
-        .filter_map(|part| part.trim().split_once('='))
-        .find_map(|(cookie_key, cookie_value)| {
-            if cookie_key == key {
-                Some(cookie_value.to_string())
+    Cookie::split_parse(cookie_header)
+        .filter_map(Result::ok)
+        .find_map(|cookie| {
+            if cookie.name() == key {
+                Some(cookie.value().to_string())
             } else {
                 None
             }

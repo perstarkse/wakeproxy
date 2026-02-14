@@ -55,7 +55,7 @@ async fn locks_after_failed_attempts() {
 }
 
 #[tokio::test]
-async fn malformed_hash_is_treated_as_invalid_credentials() {
+async fn malformed_hash_is_rejected_by_config() {
     let mut map = HashMap::new();
     map.insert("WOL_PROXY_UPSTREAM_HOST".to_string(), "charon".to_string());
     map.insert("WOL_PROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
@@ -76,14 +76,7 @@ async fn malformed_hash_is_treated_as_invalid_credentials() {
         "super-secret-session-key".to_string(),
     );
 
-    let config = Config::from_map(&map).expect("config");
-    let auth = AuthService::new(&config);
-    let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 42));
-
-    assert!(matches!(
-        auth.login(ip, "any-password").await,
-        LoginResult::InvalidCredentials
-    ));
+    assert!(Config::from_map(&map).is_err());
 }
 
 #[tokio::test]

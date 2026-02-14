@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::env;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
+use argon2::password_hash::PasswordHash;
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
@@ -11,7 +12,7 @@ pub struct Config {
     pub upstream_port: u16,
     pub health_path: String,
     pub wol_mac: [u8; 6],
-    pub wol_broadcast_ip: IpAddr,
+    pub wol_broadcast_ip: Ipv4Addr,
     pub wol_broadcast_port: u16,
     pub wake_timeout: Duration,
     pub poll_interval: Duration,
@@ -59,7 +60,7 @@ impl Config {
         let wol_mac_raw = required(map, "WOL_PROXY_WOL_MAC")?;
         let wol_mac = parse_mac(&wol_mac_raw)?;
 
-        let wol_broadcast_ip = parse_required::<IpAddr>(map, "WOL_PROXY_WOL_BROADCAST_IP")?;
+        let wol_broadcast_ip = parse_required::<Ipv4Addr>(map, "WOL_PROXY_WOL_BROADCAST_IP")?;
         let wol_broadcast_port = parse_optional::<u16>(map, "WOL_PROXY_WOL_BROADCAST_PORT", 9)?;
 
         let wake_timeout =
@@ -84,6 +85,13 @@ impl Config {
                 })?;
 
         let password_hash = required(map, "WOL_PROXY_PASSWORD_HASH")?;
+        if PasswordHash::new(&password_hash).is_err() {
+            return Err(ConfigError::InvalidValue {
+                name: "WOL_PROXY_PASSWORD_HASH",
+                value: "value must be a valid argon2 hash".to_string(),
+            });
+        }
+
         let session_secret = required(map, "WOL_PROXY_SESSION_SECRET")?;
 
         if session_secret.len() < 16 {

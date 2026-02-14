@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -50,12 +50,12 @@ pub trait WakePacketSender: Send + Sync {
 #[derive(Clone)]
 pub struct UdpWakeSender {
     mac: [u8; 6],
-    broadcast_ip: IpAddr,
+    broadcast_ip: Ipv4Addr,
     broadcast_port: u16,
 }
 
 impl UdpWakeSender {
-    pub fn new(mac: [u8; 6], broadcast_ip: IpAddr, broadcast_port: u16) -> Self {
+    pub fn new(mac: [u8; 6], broadcast_ip: Ipv4Addr, broadcast_port: u16) -> Self {
         Self {
             mac,
             broadcast_ip,
@@ -67,7 +67,7 @@ impl UdpWakeSender {
 #[async_trait]
 impl WakePacketSender for UdpWakeSender {
     async fn send_magic_packet(&self) -> anyhow::Result<()> {
-        let target = SocketAddr::new(self.broadcast_ip, self.broadcast_port);
+        let target = SocketAddr::new(IpAddr::V4(self.broadcast_ip), self.broadcast_port);
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
         socket.set_broadcast(true)?;
         socket

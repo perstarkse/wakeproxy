@@ -104,7 +104,11 @@ mod tests {
             "WOL_PROXY_WOL_BROADCAST_IP".to_string(),
             "127.255.255.255".to_string(),
         );
-        map.insert("WOL_PROXY_PASSWORD_HASH".to_string(), "hash".to_string());
+        map.insert(
+            "WOL_PROXY_PASSWORD_HASH".to_string(),
+            "$argon2id$v=19$m=19456,t=2,p=1$dGVzdHRlc3R0ZXN0dGVzdA$0xDPfypM3Y76kJumWn95v9PoW7A1WeNseyX2VINeodQ"
+                .to_string(),
+        );
         map.insert(
             "WOL_PROXY_SESSION_SECRET".to_string(),
             "integration-test-secret".to_string(),

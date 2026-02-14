@@ -41,6 +41,26 @@ cargo run
 cargo test
 ```
 
+## Coverage
+
+Run coverage inside the devenv shell (same command and threshold used by CI/hooks):
+
+```bash
+devenv shell -- cargo llvm-cov --workspace --all-features --summary-only --fail-under-lines 90
+```
+
+## CI / pre-commit checks
+
+Use `devenv shell -- ci` for the canonical pipeline (`fmt`, `clippy`, `test`, coverage).
+`devenv test` runs configured git hooks, which enforce the same checks:
+
+```bash
+devenv shell -- ci
+
+# or run the hook suite
+devenv test
+```
+
 ## Local E2E Smoke Test
 
 Run a full local flow with mock upstream on port `6994`, login, proxy, and logout verification:

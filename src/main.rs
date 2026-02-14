@@ -1,13 +1,9 @@
 use std::sync::Arc;
 
-use axum::Router;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use tokio::net::TcpListener;
-use tower::ServiceBuilder;
-use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
-use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 use wol_web_proxy::config::Config;
@@ -42,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     let state = AppState::new(config, templates, wake_coordinator, http_client);
-    let app = build_router(state.clone());
+    let app = web::build_router(state.clone());
 
     let listener = TcpListener::bind(state.config.bind_addr).await?;
     info!(bind_addr = %state.config.bind_addr, "wol-web-proxy listening");
@@ -53,29 +49,6 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     Ok(())
-}
-
-fn build_router(state: AppState) -> Router {
-    let protected_router = Router::new()
-        .fallback(axum::routing::any(web::proxy_handler))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            web::auth_guard_middleware,
-        ));
-
-    Router::new()
-        .route("/_auth/login", axum::routing::get(web::login_page))
-        .route("/_auth/login", axum::routing::post(web::login_submit))
-        .route("/_auth/logout", axum::routing::post(web::logout_submit))
-        .route("/_health", axum::routing::get(web::gateway_health))
-        .merge(protected_router)
-        .layer(
-            ServiceBuilder::new()
-                .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-                .layer(PropagateRequestIdLayer::x_request_id())
-                .layer(TraceLayer::new_for_http()),
-        )
-        .with_state(state)
 }
 
 fn init_tracing() {
