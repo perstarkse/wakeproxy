@@ -3,6 +3,188 @@
 {% block title %}Wake Status{% endblock title %}
 
 {% block head_extra %}
+<style>
+  [data-wake-root] {
+    display: grid;
+    gap: 0.9rem;
+  }
+
+  .status-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .live-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    border-radius: 999px;
+    border: 1px solid #bfd4bf;
+    background: #eff7ec;
+    color: #2f5840;
+    font-size: 0.82rem;
+    font-weight: 600;
+    padding: 0.3rem 0.58rem;
+    white-space: nowrap;
+  }
+
+  .live-indicator {
+    width: 0.72rem;
+    height: 0.72rem;
+    border-radius: 50%;
+    border: 0;
+    background: #5ea173;
+    box-shadow: 0 0 0 0 rgba(57, 117, 78, 0.32);
+    animation: ping 1.7s ease-out infinite;
+    flex-shrink: 0;
+  }
+
+  [data-wake-root][data-polling="polling"] .live-indicator {
+    border: 2px solid #bdd1c3;
+    border-top-color: #2d6f4c;
+    background: transparent;
+    box-shadow: none;
+    animation: spin 820ms linear infinite;
+  }
+
+  [data-wake-root][data-polling="error"] .live-chip {
+    border-color: #e6c7c3;
+    background: #fff1ef;
+    color: #8e3428;
+  }
+
+  [data-wake-root][data-polling="error"] .live-indicator {
+    border: 0;
+    background: #c24a3b;
+    box-shadow: 0 0 0 0 rgba(194, 74, 59, 0.28);
+    animation: ping 1.4s ease-out infinite;
+  }
+
+  .status-grid {
+    display: grid;
+    gap: 0.5rem;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  }
+
+  .status-kv {
+    border-radius: 10px;
+    border: 1px solid #d6e2d5;
+    background: #f7fbf4;
+    padding: 0.54rem 0.65rem;
+    display: grid;
+    gap: 0.35rem;
+  }
+
+  .status-kv p {
+    margin: 0;
+  }
+
+  .progress-track {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.44rem;
+  }
+
+  .progress-item {
+    display: flex;
+    align-items: center;
+    gap: 0.52rem;
+    border-radius: 10px;
+    border: 1px solid #d4e0d2;
+    background: #f8fcf6;
+    color: #55675a;
+    padding: 0.46rem 0.62rem;
+    font-size: 0.9rem;
+    transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease;
+  }
+
+  .progress-dot {
+    width: 0.58rem;
+    height: 0.58rem;
+    border-radius: 50%;
+    background: #b5c8b7;
+    flex-shrink: 0;
+  }
+
+  .progress-item[data-progress="complete"] {
+    border-color: #b8d6bf;
+    background: #eef8f0;
+    color: #2f5f40;
+  }
+
+  .progress-item[data-progress="complete"] .progress-dot {
+    background: #2d6f4c;
+  }
+
+  .progress-item[data-progress="current"] {
+    border-color: #8fb89c;
+    background: #e4f2e8;
+    color: #224933;
+  }
+
+  .progress-item[data-progress="current"] .progress-dot {
+    background: #2d6f4c;
+    box-shadow: 0 0 0 0 rgba(56, 123, 80, 0.35);
+    animation: ping 1.5s ease-out infinite;
+  }
+
+  .progress-item[data-progress="failed"] {
+    border-color: #e7c3be;
+    background: #fff3f1;
+    color: #8e3428;
+  }
+
+  .progress-item[data-progress="failed"] .progress-dot {
+    background: #c24a3b;
+  }
+
+  .poll-meta {
+    font-size: 0.84rem;
+  }
+
+  .preview-note {
+    margin: 0;
+  }
+
+  .preview-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin: 0;
+  }
+
+  .preview-link {
+    border-radius: 999px;
+    border: 1px solid #b4c9b7;
+    background: #f3f9f1;
+    color: #2b5338;
+    text-decoration: none;
+    font-size: 0.82rem;
+    padding: 0.3rem 0.58rem;
+  }
+
+  .preview-link.primary {
+    border-color: #9ab9a1;
+    background: #e8f3ea;
+    font-weight: 600;
+  }
+
+  @keyframes ping {
+    0% { box-shadow: 0 0 0 0 rgba(57, 117, 78, 0.32); }
+    80% { box-shadow: 0 0 0 0.46rem rgba(57, 117, 78, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(57, 117, 78, 0); }
+  }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+</style>
 <script>
   document.addEventListener("DOMContentLoaded", () => {
     const root = document.querySelector("[data-wake-root]");
@@ -17,6 +199,122 @@
     const cycleNode = document.querySelector("[data-cycle]");
     const actionButton = document.querySelector("[data-wake-action]");
     const reasonNode = document.querySelector("[data-reason]");
+    const pollStateNode = document.querySelector("[data-poll-state]");
+    const pollMetaNode = document.querySelector("[data-poll-meta]");
+    const progressNodes = Array.from(document.querySelectorAll("[data-progress-step]"));
+    const orderedSteps = ["sleeping", "waking", "ping_ready", "http_ready", "ready"];
+    const previewMode = root.dataset.previewMode === "true";
+    const previewAuto = root.dataset.previewAuto === "true";
+
+    let lastSuccessAt = null;
+    let pollHealth = "idle";
+    let pollInFlight = false;
+    let previewIndex = 0;
+
+    const previewStates = [
+      "sleeping",
+      "waking",
+      "ping_ready",
+      "http_ready",
+      "ready",
+      "timed_out",
+      "failed",
+    ];
+
+    const previewMessages = {
+      sleeping: "Remote system is asleep.",
+      waking: "Starting your remote system.",
+      ping_ready: "Host is reachable. Waiting for services.",
+      http_ready: "Service checks passed. Finalizing connection.",
+      ready: "Ready. Redirect suppressed in preview mode.",
+      timed_out: "Wake timed out. You can retry.",
+      failed: "Wake failed. You can retry.",
+    };
+
+    const setPollIndicator = (mode) => {
+      pollHealth = mode;
+      root.dataset.polling = mode;
+      if (!pollStateNode) {
+        return;
+      }
+
+      if (mode === "polling") {
+        pollStateNode.textContent = "Checking status";
+      } else if (mode === "error") {
+        pollStateNode.textContent = "Connection issue";
+      } else {
+        pollStateNode.textContent = "Live updates";
+      }
+    };
+
+    const updatePollMeta = () => {
+      if (!pollMetaNode) {
+        return;
+      }
+
+      if (pollHealth === "error") {
+        pollMetaNode.textContent = "Polling retry scheduled automatically.";
+        return;
+      }
+
+      if (lastSuccessAt === null) {
+        const seconds = Math.max(1, Math.round(pollInterval / 1000));
+        pollMetaNode.textContent = `Polling every ${seconds}s`;
+        return;
+      }
+
+      const elapsedSeconds = Math.floor((Date.now() - lastSuccessAt) / 1000);
+      pollMetaNode.textContent = elapsedSeconds <= 1
+        ? "Updated just now"
+        : `Updated ${elapsedSeconds}s ago`;
+    };
+
+    const setMessageTone = (state) => {
+      if (!messageNode) {
+        return;
+      }
+
+      messageNode.classList.remove("warn", "danger");
+      if (state === "timed_out") {
+        messageNode.classList.add("warn");
+      }
+      if (state === "failed") {
+        messageNode.classList.add("danger");
+      }
+    };
+
+    const setProgress = (state) => {
+      if (progressNodes.length === 0) {
+        return;
+      }
+
+      if (state === "timed_out" || state === "failed") {
+        progressNodes.forEach((node) => {
+          if (node.dataset.progressStep === "ready") {
+            node.dataset.progress = "failed";
+          } else {
+            node.dataset.progress = "complete";
+          }
+        });
+        return;
+      }
+
+      const currentIndex = orderedSteps.indexOf(state);
+      progressNodes.forEach((node, index) => {
+        if (currentIndex < 0) {
+          node.dataset.progress = "upcoming";
+          return;
+        }
+
+        if (index < currentIndex) {
+          node.dataset.progress = "complete";
+        } else if (index === currentIndex) {
+          node.dataset.progress = "current";
+        } else {
+          node.dataset.progress = "upcoming";
+        }
+      });
+    };
 
     const setButtonState = (retryable, ready) => {
       if (!actionButton) {
@@ -53,46 +351,178 @@
         reasonNode.classList.toggle("hidden", !payload.reason);
       }
 
+      root.dataset.state = payload.state;
+      setMessageTone(payload.state);
+      setProgress(payload.state);
       setButtonState(payload.retryable, payload.ready);
 
-      if (payload.ready && payload.redirect_to) {
+      if (!previewMode && payload.ready && payload.redirect_to) {
         window.location.replace(payload.redirect_to);
       }
     };
 
-    const poll = async () => {
-      const query = new URLSearchParams({ next }).toString();
-      const response = await fetch(`/_wake/poll?${query}`, {
-        credentials: "same-origin",
-        cache: "no-store",
-      });
-
-      if (!response.ok) {
+    const waitForIndicatorFrame = async (startedAt) => {
+      const elapsedMs = performance.now() - startedAt;
+      const minimumVisibleMs = 320;
+      if (elapsedMs >= minimumVisibleMs) {
         return;
       }
 
-      const payload = await response.json();
-      applyPayload(payload);
+      await new Promise((resolve) => {
+        window.setTimeout(resolve, minimumVisibleMs - elapsedMs);
+      });
     };
 
+    const poll = async () => {
+      if (pollInFlight) {
+        return;
+      }
+
+      pollInFlight = true;
+      const pollStartedAt = performance.now();
+      let nextIndicator = "idle";
+      setPollIndicator("polling");
+
+      if (previewMode && previewAuto) {
+        await waitForIndicatorFrame(pollStartedAt);
+        const state = previewStates[previewIndex % previewStates.length];
+        previewIndex += 1;
+
+        applyPayload({
+          state,
+          cycle_id: cycleNode ? Number(cycleNode.textContent || "0") || 4242 : 4242,
+          ready: false,
+          redirect_to: null,
+          message: previewMessages[state] || "State updated.",
+          retryable: state === "sleeping" || state === "timed_out" || state === "failed",
+          reason: state === "failed"
+            ? "Preview: upstream did not accept connections yet."
+            : "",
+        });
+
+        lastSuccessAt = Date.now();
+        setPollIndicator("idle");
+        updatePollMeta();
+        pollInFlight = false;
+        return;
+      }
+
+      const query = new URLSearchParams({ next }).toString();
+      try {
+        const response = await fetch(`/_wake/poll?${query}`, {
+          credentials: "same-origin",
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          nextIndicator = "error";
+          return;
+        }
+
+        const payload = await response.json();
+        lastSuccessAt = Date.now();
+        applyPayload(payload);
+      } catch (_error) {
+        nextIndicator = "error";
+      } finally {
+        await waitForIndicatorFrame(pollStartedAt);
+        setPollIndicator(nextIndicator);
+        updatePollMeta();
+        pollInFlight = false;
+      }
+    };
+
+    setProgress(root.dataset.state || "sleeping");
+    setMessageTone(root.dataset.state || "sleeping");
+    setPollIndicator("idle");
+    updatePollMeta();
     setButtonState(root.dataset.retryable === "true", root.dataset.ready === "true");
+
+    if (previewMode) {
+      previewIndex = Math.max(previewStates.indexOf(root.dataset.state || "sleeping"), 0);
+      if (!previewAuto) {
+        setPollIndicator("idle");
+        if (pollStateNode) {
+          pollStateNode.textContent = "Preview snapshot";
+        }
+        if (pollMetaNode) {
+          pollMetaNode.textContent = "Auto-cycle is off. Use the preview controls.";
+        }
+        return;
+      }
+    }
+
+    void poll();
     setInterval(() => {
       void poll();
     }, pollInterval);
+    setInterval(updatePollMeta, 1000);
   });
 </script>
 {% endblock head_extra %}
 
 {% block body %}
-<div data-wake-root data-next="{{ next }}" data-poll-interval-ms="{{ poll_interval_ms }}" data-ready="false" data-retryable="{{ retryable }}">
-  <h1>Remote system status</h1>
-  <p class="muted">Destination: <code>{{ next }}</code></p>
-  <p>
-    Current state:
-    <span class="status-badge" data-state>{{ state }}</span>
+<div data-wake-root data-next="{{ next }}" data-poll-interval-ms="{{ poll_interval_ms }}" data-ready="false" data-retryable="{{ retryable }}" data-state="{{ state }}" data-polling="idle" data-preview-mode="{{ preview_mode }}" data-preview-auto="{{ preview_auto }}">
+  <div class="status-head">
+    <h1>Remote system status</h1>
+    <p class="live-chip" role="status" aria-live="polite">
+      <span class="live-indicator" aria-hidden="true"></span>
+      <span data-poll-state>Live updates</span>
+    </p>
+  </div>
+
+  {% if preview_mode %}
+  <p class="alert warn preview-note">Preview mode active: state changes are simulated locally for UI review.</p>
+  <p class="preview-controls">
+    <a class="preview-link" href="/_dev/wake-preview?state=sleeping">sleeping</a>
+    <a class="preview-link" href="/_dev/wake-preview?state=waking">waking</a>
+    <a class="preview-link" href="/_dev/wake-preview?state=ping_ready">ping_ready</a>
+    <a class="preview-link" href="/_dev/wake-preview?state=http_ready">http_ready</a>
+    <a class="preview-link" href="/_dev/wake-preview?state=ready">ready</a>
+    <a class="preview-link" href="/_dev/wake-preview?state=timed_out">timed_out</a>
+    <a class="preview-link" href="/_dev/wake-preview?state=failed">failed</a>
+    <a class="preview-link primary" href="/_dev/wake-preview?state=sleeping&auto=1">auto cycle</a>
   </p>
-  <p class="alert" data-message>{{ status_message }}</p>
-  <p class="muted">Wake cycle: <strong data-cycle>{% if cycle_known %}{{ cycle_id }}{% else %}-{% endif %}</strong></p>
+  {% endif %}
+
+  <p class="muted">Destination: <code>{{ next }}</code></p>
+
+  <div class="status-grid">
+    <div class="status-kv">
+      <p class="muted">Current state</p>
+      <p><span class="status-badge" data-state>{{ state }}</span></p>
+    </div>
+    <div class="status-kv">
+      <p class="muted">Wake cycle</p>
+      <p><strong data-cycle>{% if cycle_known %}{{ cycle_id }}{% else %}-{% endif %}</strong></p>
+    </div>
+  </div>
+
+  <ol class="progress-track" aria-label="Wake progress">
+    <li class="progress-item" data-progress-step="sleeping" data-progress="upcoming">
+      <span class="progress-dot" aria-hidden="true"></span>
+      <span>System sleeping</span>
+    </li>
+    <li class="progress-item" data-progress-step="waking" data-progress="upcoming">
+      <span class="progress-dot" aria-hidden="true"></span>
+      <span>Sending wake signal</span>
+    </li>
+    <li class="progress-item" data-progress-step="ping_ready" data-progress="upcoming">
+      <span class="progress-dot" aria-hidden="true"></span>
+      <span>Host reachable</span>
+    </li>
+    <li class="progress-item" data-progress-step="http_ready" data-progress="upcoming">
+      <span class="progress-dot" aria-hidden="true"></span>
+      <span>Service checks passing</span>
+    </li>
+    <li class="progress-item" data-progress-step="ready" data-progress="upcoming">
+      <span class="progress-dot" aria-hidden="true"></span>
+      <span>Ready to connect</span>
+    </li>
+  </ol>
+
+  <p class="alert" data-message aria-live="polite">{{ status_message }}</p>
+  <p class="muted poll-meta" data-poll-meta>Starting live checks...</p>
   <p class="alert danger {% if reason == "" %}hidden{% endif %}" data-reason>{% if reason != "" %}{{ reason }}{% endif %}</p>
 
   <form method="post" action="/_wake/start" class="actions">

@@ -131,6 +131,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/_auth/login", get(login_page))
         .route("/_auth/login", post(login_submit))
         .route("/_auth/logout", post(logout_submit))
+        .route("/_dev/wake-preview", get(wake_preview_page))
         .route("/_health", get(gateway_health))
         .merge(wake_router)
         .merge(protected_router)
@@ -162,6 +163,15 @@ pub struct WakeQuery {
 #[derive(Deserialize)]
 pub struct WakeStartForm {
     next: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct WakePreviewQuery {
+    next: Option<String>,
+    state: Option<String>,
+    reason: Option<String>,
+    cycle_id: Option<u64>,
+    auto: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -252,10 +262,61 @@ pub async fn wake_page(
     context.insert("cycle_id", &snapshot.cycle_id.unwrap_or_default());
     context.insert("cycle_known", &snapshot.cycle_id.is_some());
     context.insert("reason", &snapshot.reason.unwrap_or_default());
+    context.insert("preview_mode", &false);
+    context.insert("preview_auto", &false);
 
     let mut response = render_template(&state, "wake-status.html", context, StatusCode::OK);
     mark_uncacheable(response.headers_mut());
     response
+}
+
+pub async fn wake_preview_page(
+    State(state): State<AppState>,
+    Query(query): Query<WakePreviewQuery>,
+) -> axum::response::Response {
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (state, query);
+        return (StatusCode::NOT_FOUND, "Not found").into_response();
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        let next = sanitize_next(query.next.as_deref()).unwrap_or_else(|| "/demo".to_string());
+        let preview_state = query
+            .state
+            .as_deref()
+            .and_then(wake_state_from_label)
+            .unwrap_or(WakeState::Sleeping);
+        let preview_auto = query
+            .auto
+            .as_deref()
+            .map(preview_auto_from_label)
+            .unwrap_or(false);
+        let reason = query.reason.unwrap_or_else(|| {
+            if preview_state == WakeState::Failed {
+                "Preview: upstream did not accept connections yet.".to_string()
+            } else {
+                "".to_string()
+            }
+        });
+
+        let mut context = Context::new();
+        context.insert("next", &next);
+        context.insert("poll_interval_ms", &1200_u64);
+        context.insert("state", wake_state_label(preview_state));
+        context.insert("status_message", wake_status_message(preview_state));
+        context.insert("retryable", &wake_retryable(preview_state));
+        context.insert("cycle_id", &query.cycle_id.unwrap_or(4242));
+        context.insert("cycle_known", &true);
+        context.insert("reason", &reason);
+        context.insert("preview_mode", &true);
+        context.insert("preview_auto", &preview_auto);
+
+        let mut response = render_template(&state, "wake-status.html", context, StatusCode::OK);
+        mark_uncacheable(response.headers_mut());
+        response
+    }
 }
 
 pub async fn wake_start_submit(
@@ -514,6 +575,23 @@ fn wake_retryable(state: WakeState) -> bool {
     )
 }
 
+fn wake_state_from_label(state: &str) -> Option<WakeState> {
+    match state {
+        "sleeping" => Some(WakeState::Sleeping),
+        "waking" => Some(WakeState::Waking),
+        "ping_ready" => Some(WakeState::PingReady),
+        "http_ready" => Some(WakeState::HttpReady),
+        "ready" => Some(WakeState::Ready),
+        "timed_out" => Some(WakeState::TimedOut),
+        "failed" => Some(WakeState::Failed),
+        _ => None,
+    }
+}
+
+fn preview_auto_from_label(value: &str) -> bool {
+    matches!(value, "1" | "true" | "yes" | "on")
+}
+
 fn mark_uncacheable(headers: &mut HeaderMap) {
     headers.insert(
         CACHE_CONTROL,
@@ -538,8 +616,8 @@ mod tests {
     use axum::http::HeaderMap;
 
     use super::{
-        load_templates, mark_uncacheable, sanitize_next, wake_retryable, wake_state_label,
-        wake_status_message,
+        load_templates, mark_uncacheable, preview_auto_from_label, sanitize_next, wake_retryable,
+        wake_state_from_label, wake_state_label, wake_status_message,
     };
     use crate::wake::WakeState;
 
@@ -629,5 +707,35 @@ mod tests {
         assert_eq!(sanitize_next(Some("/ok")), Some("/ok".to_string()));
         assert_eq!(sanitize_next(Some("//evil.example")), None);
         assert_eq!(sanitize_next(Some("https://evil.example")), None);
+    }
+
+    #[test]
+    fn wake_state_from_label_round_trips_known_labels() {
+        let cases = [
+            ("sleeping", WakeState::Sleeping),
+            ("waking", WakeState::Waking),
+            ("ping_ready", WakeState::PingReady),
+            ("http_ready", WakeState::HttpReady),
+            ("ready", WakeState::Ready),
+            ("timed_out", WakeState::TimedOut),
+            ("failed", WakeState::Failed),
+        ];
+
+        for (label, expected) in cases {
+            assert_eq!(wake_state_from_label(label), Some(expected));
+        }
+
+        assert_eq!(wake_state_from_label("unknown"), None);
+    }
+
+    #[test]
+    fn preview_auto_from_label_accepts_truthy_values() {
+        assert!(preview_auto_from_label("1"));
+        assert!(preview_auto_from_label("true"));
+        assert!(preview_auto_from_label("yes"));
+        assert!(preview_auto_from_label("on"));
+        assert!(!preview_auto_from_label("0"));
+        assert!(!preview_auto_from_label("false"));
+        assert!(!preview_auto_from_label("no"));
     }
 }
