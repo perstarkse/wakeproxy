@@ -8,8 +8,8 @@ use tokio::net::TcpListener;
 mod common;
 
 use common::{
-    AlwaysReadyProbe, OkWakeSender, build_config, login_and_extract_cookie, spawn_gateway,
-    spawn_gateway_with_templates, spawn_upstream, test_client,
+    AlwaysReadyProbe, NeverReadyProbe, OkWakeSender, build_config, login_and_extract_cookie,
+    spawn_gateway, spawn_gateway_with_templates, spawn_upstream, test_client,
 };
 
 #[tokio::test]
@@ -124,4 +124,31 @@ async fn upgrade_with_non_upgrading_client_hits_upgrade_error_path() {
 
     assert_eq!(response.status(), reqwest::StatusCode::SWITCHING_PROTOCOLS);
     tokio::time::sleep(Duration::from_millis(50)).await;
+}
+
+#[tokio::test]
+async fn non_get_request_returns_503_when_upstream_is_not_ready() {
+    let upstream = spawn_upstream().await;
+    let config = build_config(upstream.addr.port(), "password-non-get-not-ready");
+    let gateway = spawn_gateway(config, OkWakeSender, NeverReadyProbe).await;
+    let client = test_client();
+    let cookie =
+        login_and_extract_cookie(&client, &gateway.url(), "password-non-get-not-ready").await;
+
+    let response = client
+        .post(format!("{}/api", gateway.url()))
+        .header(COOKIE, cookie)
+        .body("payload")
+        .send()
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok()),
+        Some("3")
+    );
 }

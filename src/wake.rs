@@ -30,6 +30,21 @@ pub enum EnsureReadyResult {
 }
 
 #[derive(Debug, Clone)]
+pub struct WakeStatusSnapshot {
+    pub cycle_id: Option<u64>,
+    pub state: WakeState,
+    pub ready: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeStartResult {
+    Started { cycle_id: u64 },
+    AlreadyWaking { cycle_id: u64 },
+    AlreadyReady { cycle_id: Option<u64> },
+}
+
+#[derive(Debug, Clone)]
 enum WakeOutcome {
     Ready,
     TimedOut,
@@ -98,7 +113,8 @@ struct Inner {
     next_cycle_id: u64,
     current_cycle: Option<Arc<WakeCycle>>,
     last_ready_at: Option<Instant>,
-    last_ready_cycle_id: u64,
+    last_ready_cycle_id: Option<u64>,
+    last_outcome: Option<WakeOutcome>,
 }
 
 struct WakeCycle {
@@ -131,7 +147,8 @@ impl WakeCoordinator {
                 next_cycle_id: 1,
                 current_cycle: None,
                 last_ready_at: None,
-                last_ready_cycle_id: 0,
+                last_ready_cycle_id: None,
+                last_outcome: None,
             })),
         }
     }
@@ -141,8 +158,78 @@ impl WakeCoordinator {
             return EnsureReadyResult::Ready { cycle_id };
         }
 
-        let cycle = self.get_or_start_cycle().await;
+        let (cycle, _) = self.get_or_start_cycle().await;
         self.wait_for_cycle(cycle, max_wait).await
+    }
+
+    pub async fn start_wake(&self) -> WakeStartResult {
+        if let Some(cycle_id) = self.check_ready_cache().await {
+            return WakeStartResult::AlreadyReady {
+                cycle_id: Some(cycle_id),
+            };
+        }
+
+        let (cycle, started_new) = self.get_or_start_cycle().await;
+        if started_new {
+            WakeStartResult::Started { cycle_id: cycle.id }
+        } else {
+            WakeStartResult::AlreadyWaking { cycle_id: cycle.id }
+        }
+    }
+
+    pub async fn status_snapshot(&self) -> WakeStatusSnapshot {
+        if let Some(cycle_id) = self.check_ready_cache().await {
+            return WakeStatusSnapshot {
+                cycle_id: Some(cycle_id),
+                state: WakeState::Ready,
+                ready: true,
+                reason: None,
+            };
+        }
+
+        let (current_cycle, last_outcome, last_ready_cycle_id) = {
+            let inner = self.inner.lock().await;
+            (
+                inner.current_cycle.clone(),
+                inner.last_outcome.clone(),
+                inner.last_ready_cycle_id,
+            )
+        };
+
+        if let Some(cycle) = current_cycle {
+            if let Some(outcome) = cycle.result_tx.borrow().clone() {
+                return map_outcome_snapshot(Some(cycle.id), outcome);
+            }
+
+            return WakeStatusSnapshot {
+                cycle_id: Some(cycle.id),
+                state: *cycle.state_tx.borrow(),
+                ready: false,
+                reason: None,
+            };
+        }
+
+        let ping_ok = self.probe.ping().await;
+        if ping_ok && self.probe.health().await {
+            self.mark_direct_ready().await;
+            return WakeStatusSnapshot {
+                cycle_id: last_ready_cycle_id,
+                state: WakeState::Ready,
+                ready: true,
+                reason: None,
+            };
+        }
+
+        if let Some(outcome) = last_outcome {
+            return map_outcome_snapshot(None, outcome);
+        }
+
+        WakeStatusSnapshot {
+            cycle_id: None,
+            state: WakeState::Sleeping,
+            ready: false,
+            reason: None,
+        }
     }
 
     async fn check_ready_cache(&self) -> Option<u64> {
@@ -152,20 +239,32 @@ impl WakeCoordinator {
         if let Some(last_ready_at) = inner.last_ready_at
             && last_ready_at.elapsed() <= self.config.ready_cache_ttl
         {
-            return Some(inner.last_ready_cycle_id);
+            return inner.last_ready_cycle_id;
         }
         None
     }
 
-    async fn get_or_start_cycle(&self) -> Arc<WakeCycle> {
+    async fn get_or_start_cycle(&self) -> (Arc<WakeCycle>, bool) {
         let mut inner = self.inner.lock().await;
 
         if let Some(current) = inner.current_cycle.clone()
             && current.result_tx.borrow().is_none()
         {
-            return current;
+            return (current, false);
         }
 
+        let cycle = self.start_cycle_locked(&mut inner);
+
+        let this = self.clone();
+        let cycle_clone = cycle.clone();
+        tokio::spawn(async move {
+            this.run_cycle(cycle_clone).await;
+        });
+
+        (cycle, true)
+    }
+
+    fn start_cycle_locked(&self, inner: &mut Inner) -> Arc<WakeCycle> {
         let cycle_id = inner.next_cycle_id;
         inner.next_cycle_id += 1;
 
@@ -179,13 +278,7 @@ impl WakeCoordinator {
         });
 
         inner.current_cycle = Some(cycle.clone());
-
-        let this = self.clone();
-        let cycle_clone = cycle.clone();
-        tokio::spawn(async move {
-            this.run_cycle(cycle_clone).await;
-        });
-
+        inner.last_outcome = None;
         cycle
     }
 
@@ -223,9 +316,10 @@ impl WakeCoordinator {
 
         if let Err(error) = self.sender.send_magic_packet().await {
             error!(cycle_id, ?error, "failed sending wol packet");
+            let outcome = WakeOutcome::Failed(error.to_string());
             cycle.set_state(WakeState::Failed);
-            cycle.set_result(WakeOutcome::Failed(error.to_string()));
-            self.finish_cycle(cycle_id, None).await;
+            cycle.set_result(outcome.clone());
+            self.finish_cycle(cycle_id, outcome, None).await;
             return;
         }
 
@@ -233,10 +327,11 @@ impl WakeCoordinator {
 
         loop {
             if Instant::now() >= deadline {
+                let outcome = WakeOutcome::TimedOut;
                 cycle.set_state(WakeState::TimedOut);
-                cycle.set_result(WakeOutcome::TimedOut);
+                cycle.set_result(outcome.clone());
                 info!(cycle_id, "wake cycle timed out");
-                self.finish_cycle(cycle_id, None).await;
+                self.finish_cycle(cycle_id, outcome, None).await;
                 return;
             }
 
@@ -251,11 +346,13 @@ impl WakeCoordinator {
                 false
             };
             if ping_ok && health_ok {
+                let outcome = WakeOutcome::Ready;
                 cycle.set_state(WakeState::HttpReady);
                 cycle.set_state(WakeState::Ready);
-                cycle.set_result(WakeOutcome::Ready);
+                cycle.set_result(outcome.clone());
                 info!(cycle_id, "upstream ready");
-                self.finish_cycle(cycle_id, Some(Instant::now())).await;
+                self.finish_cycle(cycle_id, outcome, Some(Instant::now()))
+                    .await;
                 return;
             }
 
@@ -263,7 +360,7 @@ impl WakeCoordinator {
         }
     }
 
-    async fn finish_cycle(&self, cycle_id: u64, ready_at: Option<Instant>) {
+    async fn finish_cycle(&self, cycle_id: u64, outcome: WakeOutcome, ready_at: Option<Instant>) {
         let mut inner = self.inner.lock().await;
         if let Some(current) = inner.current_cycle.as_ref()
             && current.id == cycle_id
@@ -273,8 +370,20 @@ impl WakeCoordinator {
 
         if let Some(ready_at) = ready_at {
             inner.last_ready_at = Some(ready_at);
-            inner.last_ready_cycle_id = cycle_id;
+            inner.last_ready_cycle_id = Some(cycle_id);
+            inner.last_outcome = None;
+            return;
         }
+
+        if !matches!(outcome, WakeOutcome::Ready) {
+            inner.last_outcome = Some(outcome);
+        }
+    }
+
+    async fn mark_direct_ready(&self) {
+        let mut inner = self.inner.lock().await;
+        inner.last_ready_at = Some(Instant::now());
+        inner.last_outcome = None;
     }
 }
 
@@ -283,6 +392,29 @@ fn map_outcome(cycle_id: u64, outcome: WakeOutcome) -> EnsureReadyResult {
         WakeOutcome::Ready => EnsureReadyResult::Ready { cycle_id },
         WakeOutcome::TimedOut => EnsureReadyResult::TimedOut { cycle_id },
         WakeOutcome::Failed(reason) => EnsureReadyResult::Failed { cycle_id, reason },
+    }
+}
+
+fn map_outcome_snapshot(cycle_id: Option<u64>, outcome: WakeOutcome) -> WakeStatusSnapshot {
+    match outcome {
+        WakeOutcome::Ready => WakeStatusSnapshot {
+            cycle_id,
+            state: WakeState::Ready,
+            ready: true,
+            reason: None,
+        },
+        WakeOutcome::TimedOut => WakeStatusSnapshot {
+            cycle_id,
+            state: WakeState::TimedOut,
+            ready: false,
+            reason: None,
+        },
+        WakeOutcome::Failed(reason) => WakeStatusSnapshot {
+            cycle_id,
+            state: WakeState::Failed,
+            ready: false,
+            reason: Some(reason),
+        },
     }
 }
 
@@ -312,7 +444,7 @@ mod tests {
 
     use super::{
         EnsureReadyResult, UdpWakeSender, WakeConfig, WakeCoordinator, WakeCycle, WakeOutcome,
-        WakePacketSender, WakeSendError, WakeState,
+        WakePacketSender, WakeSendError, WakeStartResult, WakeState,
     };
 
     #[derive(Clone)]
@@ -336,10 +468,24 @@ mod tests {
     #[derive(Clone)]
     struct NeverReadyProbe;
 
+    #[derive(Clone)]
+    struct PingDownProbe;
+
     #[async_trait]
     impl ReadinessProbe for NeverReadyProbe {
         async fn ping(&self) -> bool {
             true
+        }
+
+        async fn health(&self) -> bool {
+            false
+        }
+    }
+
+    #[async_trait]
+    impl ReadinessProbe for PingDownProbe {
+        async fn ping(&self) -> bool {
+            false
         }
 
         async fn health(&self) -> bool {
@@ -536,8 +682,9 @@ mod tests {
             inner.current_cycle = Some(cycle.clone());
         }
 
-        let reused = coordinator.get_or_start_cycle().await;
+        let (reused, started_new) = coordinator.get_or_start_cycle().await;
         assert_eq!(reused.id, 99);
+        assert!(!started_new);
     }
 
     #[tokio::test]
@@ -607,5 +754,214 @@ mod tests {
                 state: WakeState::PingReady
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn status_snapshot_reports_sleeping_when_probe_is_not_ready() {
+        let coordinator = WakeCoordinator::new(
+            WakeConfig {
+                wake_timeout: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
+                ready_cache_ttl: Duration::from_secs(1),
+            },
+            Arc::new(MockWakeSender {
+                sends: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(NeverReadyProbe),
+        );
+
+        let snapshot = coordinator.status_snapshot().await;
+        assert_eq!(snapshot.state, WakeState::Sleeping);
+        assert!(!snapshot.ready);
+    }
+
+    #[tokio::test]
+    async fn start_wake_reports_existing_cycle_when_already_inflight() {
+        let coordinator = WakeCoordinator::new(
+            WakeConfig {
+                wake_timeout: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
+                ready_cache_ttl: Duration::from_secs(1),
+            },
+            Arc::new(MockWakeSender {
+                sends: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(NeverReadyProbe),
+        );
+
+        let first = coordinator.start_wake().await;
+        let second = coordinator.start_wake().await;
+
+        assert!(matches!(first, WakeStartResult::Started { .. }));
+        assert!(matches!(second, WakeStartResult::AlreadyWaking { .. }));
+    }
+
+    #[tokio::test]
+    async fn start_wake_reports_already_ready_from_recent_cache() {
+        let coordinator = WakeCoordinator::new(
+            WakeConfig {
+                wake_timeout: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
+                ready_cache_ttl: Duration::from_secs(1),
+            },
+            Arc::new(MockWakeSender {
+                sends: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(MockProbe {
+                checks: Arc::new(AtomicUsize::new(10)),
+            }),
+        );
+
+        assert!(matches!(
+            coordinator.ensure_ready(Duration::from_secs(1)).await,
+            EnsureReadyResult::Ready { .. }
+        ));
+
+        let start = coordinator.start_wake().await;
+        assert!(matches!(
+            start,
+            WakeStartResult::AlreadyReady { cycle_id: Some(_) }
+        ));
+    }
+
+    #[tokio::test]
+    async fn status_snapshot_reports_ready_from_recent_cache() {
+        let coordinator = WakeCoordinator::new(
+            WakeConfig {
+                wake_timeout: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
+                ready_cache_ttl: Duration::from_secs(1),
+            },
+            Arc::new(MockWakeSender {
+                sends: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(MockProbe {
+                checks: Arc::new(AtomicUsize::new(10)),
+            }),
+        );
+
+        assert!(matches!(
+            coordinator.ensure_ready(Duration::from_secs(1)).await,
+            EnsureReadyResult::Ready { .. }
+        ));
+
+        let snapshot = coordinator.status_snapshot().await;
+        assert_eq!(snapshot.state, WakeState::Ready);
+        assert!(snapshot.ready);
+        assert!(snapshot.cycle_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn status_snapshot_reports_current_cycle_state_without_result() {
+        let coordinator = WakeCoordinator::new(
+            WakeConfig {
+                wake_timeout: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
+                ready_cache_ttl: Duration::from_secs(1),
+            },
+            Arc::new(MockWakeSender {
+                sends: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(NeverReadyProbe),
+        );
+
+        let (state_tx, _) = watch::channel(WakeState::Waking);
+        let (result_tx, _) = watch::channel(None);
+        let cycle = Arc::new(WakeCycle {
+            id: 44,
+            state_tx,
+            result_tx,
+        });
+
+        {
+            let mut inner = coordinator.inner.lock().await;
+            inner.current_cycle = Some(cycle);
+        }
+
+        let snapshot = coordinator.status_snapshot().await;
+        assert_eq!(snapshot.state, WakeState::Waking);
+        assert!(!snapshot.ready);
+        assert_eq!(snapshot.cycle_id, Some(44));
+    }
+
+    #[tokio::test]
+    async fn status_snapshot_reports_cycle_result_when_present() {
+        let coordinator = WakeCoordinator::new(
+            WakeConfig {
+                wake_timeout: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
+                ready_cache_ttl: Duration::from_secs(1),
+            },
+            Arc::new(MockWakeSender {
+                sends: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(NeverReadyProbe),
+        );
+
+        let (state_tx, _) = watch::channel(WakeState::Ready);
+        let (result_tx, _) = watch::channel(Some(WakeOutcome::Ready));
+        let cycle = Arc::new(WakeCycle {
+            id: 45,
+            state_tx,
+            result_tx,
+        });
+
+        {
+            let mut inner = coordinator.inner.lock().await;
+            inner.current_cycle = Some(cycle);
+        }
+
+        let snapshot = coordinator.status_snapshot().await;
+        assert_eq!(snapshot.state, WakeState::Ready);
+        assert!(snapshot.ready);
+        assert_eq!(snapshot.cycle_id, Some(45));
+    }
+
+    #[tokio::test]
+    async fn status_snapshot_reports_last_timeout_outcome() {
+        let coordinator = WakeCoordinator::new(
+            WakeConfig {
+                wake_timeout: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
+                ready_cache_ttl: Duration::from_secs(1),
+            },
+            Arc::new(MockWakeSender {
+                sends: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(NeverReadyProbe),
+        );
+
+        {
+            let mut inner = coordinator.inner.lock().await;
+            inner.last_outcome = Some(WakeOutcome::TimedOut);
+        }
+
+        let snapshot = coordinator.status_snapshot().await;
+        assert_eq!(snapshot.state, WakeState::TimedOut);
+        assert!(!snapshot.ready);
+    }
+
+    #[tokio::test]
+    async fn ensure_ready_with_ping_down_probe_times_out() {
+        let coordinator = WakeCoordinator::new(
+            WakeConfig {
+                wake_timeout: Duration::from_millis(80),
+                poll_interval: Duration::from_millis(20),
+                ready_cache_ttl: Duration::from_secs(1),
+            },
+            Arc::new(MockWakeSender {
+                sends: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(PingDownProbe),
+        );
+
+        let result = coordinator.ensure_ready(Duration::from_secs(1)).await;
+        assert!(matches!(result, EnsureReadyResult::TimedOut { .. }));
+    }
+
+    #[tokio::test]
+    async fn ping_down_probe_health_method_returns_false() {
+        let probe = PingDownProbe;
+        assert!(!probe.health().await);
     }
 }

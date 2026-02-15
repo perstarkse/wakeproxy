@@ -4,14 +4,14 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Form, Query, Request, State};
-use axum::http::header::SET_COOKIE;
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::header::{CACHE_CONTROL, EXPIRES, PRAGMA, RETRY_AFTER, SET_COOKIE};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect};
 use axum::routing::{any, get, post};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
 use thiserror::Error;
 use tower::ServiceBuilder;
@@ -22,7 +22,7 @@ use tracing::{error, info, warn};
 use crate::auth::{AuthService, LoginResult, append_set_cookie};
 use crate::config::Config;
 use crate::proxy::{ProxyError, ProxyService};
-use crate::wake::{EnsureReadyResult, WakeCoordinator};
+use crate::wake::{WakeCoordinator, WakeStartResult, WakeState};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -95,18 +95,8 @@ pub fn load_templates() -> Result<Tera, TemplateLoadError> {
     )?;
     add_template(
         &mut tera,
-        "still-waking.html",
-        include_str!("../templates/still-waking.html"),
-    )?;
-    add_template(
-        &mut tera,
-        "wake-timeout.html",
-        include_str!("../templates/wake-timeout.html"),
-    )?;
-    add_template(
-        &mut tera,
-        "upstream-unhealthy.html",
-        include_str!("../templates/upstream-unhealthy.html"),
+        "wake-status.html",
+        include_str!("../templates/wake-status.html"),
     )?;
     add_template(
         &mut tera,
@@ -117,19 +107,32 @@ pub fn load_templates() -> Result<Tera, TemplateLoadError> {
 }
 
 pub fn build_router(state: AppState) -> Router {
-    let protected_router =
-        Router::new()
-            .fallback(any(proxy_handler))
-            .layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                auth_guard_middleware,
-            ));
+    let wake_router = Router::new()
+        .route("/_wake", get(wake_page))
+        .route("/_wake/start", post(wake_start_submit))
+        .route("/_wake/poll", get(wake_poll))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_guard_middleware,
+        ));
+
+    let protected_router = Router::new()
+        .fallback(any(proxy_handler))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            readiness_gate_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_guard_middleware,
+        ));
 
     Router::new()
         .route("/_auth/login", get(login_page))
         .route("/_auth/login", post(login_submit))
         .route("/_auth/logout", post(logout_submit))
         .route("/_health", get(gateway_health))
+        .merge(wake_router)
         .merge(protected_router)
         .layer(
             ServiceBuilder::new()
@@ -149,6 +152,27 @@ pub struct LoginQuery {
 pub struct LoginForm {
     password: String,
     next: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct WakeQuery {
+    next: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct WakeStartForm {
+    next: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct WakePollPayload {
+    state: &'static str,
+    cycle_id: Option<u64>,
+    ready: bool,
+    redirect_to: Option<String>,
+    message: &'static str,
+    retryable: bool,
+    reason: Option<String>,
 }
 
 pub async fn login_page(
@@ -208,6 +232,69 @@ pub async fn logout_submit(
     response
 }
 
+pub async fn wake_page(
+    State(state): State<AppState>,
+    Query(query): Query<WakeQuery>,
+) -> axum::response::Response {
+    let next = sanitize_next(query.next.as_deref()).unwrap_or_else(|| "/".to_string());
+    let snapshot = state.wake.status_snapshot().await;
+
+    if snapshot.ready {
+        return Redirect::to(&next).into_response();
+    }
+
+    let mut context = Context::new();
+    context.insert("next", &next);
+    context.insert("poll_interval_ms", &state.config.wake_poll_interval_ms);
+    context.insert("state", wake_state_label(snapshot.state));
+    context.insert("status_message", wake_status_message(snapshot.state));
+    context.insert("retryable", &wake_retryable(snapshot.state));
+    context.insert("cycle_id", &snapshot.cycle_id.unwrap_or_default());
+    context.insert("cycle_known", &snapshot.cycle_id.is_some());
+    context.insert("reason", &snapshot.reason.unwrap_or_default());
+
+    let mut response = render_template(&state, "wake-status.html", context, StatusCode::OK);
+    mark_uncacheable(response.headers_mut());
+    response
+}
+
+pub async fn wake_start_submit(
+    State(state): State<AppState>,
+    Form(form): Form<WakeStartForm>,
+) -> axum::response::Response {
+    let next = sanitize_next(form.next.as_deref()).unwrap_or_else(|| "/".to_string());
+
+    if let WakeStartResult::AlreadyReady { .. } = state.wake.start_wake().await {
+        return Redirect::to(&next).into_response();
+    }
+
+    let encoded_next = urlencoding::encode(&next);
+    let target = format!("/_wake?next={encoded_next}");
+    Redirect::to(&target).into_response()
+}
+
+pub async fn wake_poll(
+    State(state): State<AppState>,
+    Query(query): Query<WakeQuery>,
+) -> axum::response::Response {
+    let next = sanitize_next(query.next.as_deref()).unwrap_or_else(|| "/".to_string());
+    let snapshot = state.wake.status_snapshot().await;
+
+    let payload = WakePollPayload {
+        state: wake_state_label(snapshot.state),
+        cycle_id: snapshot.cycle_id,
+        ready: snapshot.ready,
+        redirect_to: snapshot.ready.then_some(next),
+        message: wake_status_message(snapshot.state),
+        retryable: wake_retryable(snapshot.state),
+        reason: snapshot.reason,
+    };
+
+    let mut response = axum::Json(payload).into_response();
+    mark_uncacheable(response.headers_mut());
+    response
+}
+
 pub async fn gateway_health() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
@@ -237,6 +324,41 @@ pub async fn auth_guard_middleware(
     Redirect::to(&target).into_response()
 }
 
+pub async fn readiness_gate_middleware(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> axum::response::Response {
+    let snapshot = state.wake.status_snapshot().await;
+    if snapshot.ready {
+        return next.run(request).await;
+    }
+
+    let encoded_next = urlencoding::encode(
+        request
+            .uri()
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or("/"),
+    );
+
+    if request.method() == Method::GET || request.method() == Method::HEAD {
+        let target = format!("/_wake?next={encoded_next}");
+        return Redirect::to(&target).into_response();
+    }
+
+    let mut response = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Upstream is not ready. Open /_wake to wake and connect.",
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(RETRY_AFTER, HeaderValue::from_static("3"));
+    mark_uncacheable(response.headers_mut());
+    response
+}
+
 pub async fn proxy_handler(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -246,49 +368,10 @@ pub async fn proxy_handler(
     let trust_proxy = should_trust_proxy(&state.config, addr);
     let client_ip = extract_client_ip(&state.config, &headers, addr);
 
-    match state
-        .wake
-        .ensure_ready(state.config.edge_wait_timeout)
-        .await
-    {
-        EnsureReadyResult::Ready { cycle_id } => {
-            info!(cycle_id, auth = true, "upstream is ready, proxying request");
-        }
-        EnsureReadyResult::StillWaking {
-            cycle_id,
-            state: wake_state,
-        } => {
-            info!(cycle_id, ?wake_state, "still waking upstream");
-            let mut context = Context::new();
-            context.insert("cycle_id", &cycle_id);
-            context.insert("state", &format!("{wake_state:?}"));
-            return render_template(&state, "still-waking.html", context, StatusCode::ACCEPTED);
-        }
-        EnsureReadyResult::TimedOut { cycle_id } => {
-            warn!(cycle_id, "wake timeout reached");
-            let mut context = Context::new();
-            context.insert("cycle_id", &cycle_id);
-            context.insert("timeout_secs", &state.config.wake_timeout.as_secs());
-            return render_template(
-                &state,
-                "wake-timeout.html",
-                context,
-                StatusCode::GATEWAY_TIMEOUT,
-            );
-        }
-        EnsureReadyResult::Failed { cycle_id, reason } => {
-            error!(cycle_id, %reason, "wake cycle failed");
-            let mut context = Context::new();
-            context.insert("cycle_id", &cycle_id);
-            context.insert("error", &reason);
-            return render_template(
-                &state,
-                "upstream-unhealthy.html",
-                context,
-                StatusCode::BAD_GATEWAY,
-            );
-        }
-    }
+    info!(
+        auth = true,
+        "upstream assumed ready by readiness gate, proxying request"
+    );
 
     match state.proxy.forward(request, client_ip, trust_proxy).await {
         Ok(response) => response,
@@ -305,7 +388,9 @@ fn render_login(
     let mut context = Context::new();
     context.insert("next", &next.unwrap_or("/"));
     context.insert("error", &error.unwrap_or(""));
-    render_template(state, "login.html", context, status)
+    let mut response = render_template(state, "login.html", context, status);
+    mark_uncacheable(response.headers_mut());
+    response
 }
 
 fn render_template(
@@ -398,6 +483,46 @@ fn should_trust_proxy(config: &Config, connect_info: SocketAddr) -> bool {
     config.trust_proxy_headers && config.trusted_proxy_ips.contains(&connect_info.ip())
 }
 
+fn wake_state_label(state: WakeState) -> &'static str {
+    match state {
+        WakeState::Sleeping => "sleeping",
+        WakeState::Waking => "waking",
+        WakeState::PingReady => "ping_ready",
+        WakeState::HttpReady => "http_ready",
+        WakeState::Ready => "ready",
+        WakeState::TimedOut => "timed_out",
+        WakeState::Failed => "failed",
+    }
+}
+
+fn wake_status_message(state: WakeState) -> &'static str {
+    match state {
+        WakeState::Sleeping => "Remote system is asleep.",
+        WakeState::Waking => "Starting your remote system.",
+        WakeState::PingReady => "Host is reachable. Waiting for services.",
+        WakeState::HttpReady => "Service checks passed. Finalizing connection.",
+        WakeState::Ready => "Ready. Redirecting to your destination.",
+        WakeState::TimedOut => "Wake timed out. You can retry.",
+        WakeState::Failed => "Wake failed. You can retry.",
+    }
+}
+
+fn wake_retryable(state: WakeState) -> bool {
+    matches!(
+        state,
+        WakeState::Sleeping | WakeState::TimedOut | WakeState::Failed
+    )
+}
+
+fn mark_uncacheable(headers: &mut HeaderMap) {
+    headers.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
+    );
+    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+    headers.insert(EXPIRES, HeaderValue::from_static("0"));
+}
+
 fn sanitize_next(next: Option<&str>) -> Option<String> {
     let next = next?;
 
@@ -405,5 +530,104 @@ fn sanitize_next(next: Option<&str>) -> Option<String> {
         Some(next.to_string())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::HeaderMap;
+
+    use super::{
+        load_templates, mark_uncacheable, sanitize_next, wake_retryable, wake_state_label,
+        wake_status_message,
+    };
+    use crate::wake::WakeState;
+
+    #[test]
+    fn wake_state_labels_and_messages_cover_all_variants() {
+        let cases = [
+            (
+                WakeState::Sleeping,
+                "sleeping",
+                "Remote system is asleep.",
+                true,
+            ),
+            (
+                WakeState::Waking,
+                "waking",
+                "Starting your remote system.",
+                false,
+            ),
+            (
+                WakeState::PingReady,
+                "ping_ready",
+                "Host is reachable. Waiting for services.",
+                false,
+            ),
+            (
+                WakeState::HttpReady,
+                "http_ready",
+                "Service checks passed. Finalizing connection.",
+                false,
+            ),
+            (
+                WakeState::Ready,
+                "ready",
+                "Ready. Redirecting to your destination.",
+                false,
+            ),
+            (
+                WakeState::TimedOut,
+                "timed_out",
+                "Wake timed out. You can retry.",
+                true,
+            ),
+            (
+                WakeState::Failed,
+                "failed",
+                "Wake failed. You can retry.",
+                true,
+            ),
+        ];
+
+        for (state, label, message, retryable) in cases {
+            assert_eq!(wake_state_label(state), label);
+            assert_eq!(wake_status_message(state), message);
+            assert_eq!(wake_retryable(state), retryable);
+        }
+    }
+
+    #[test]
+    fn mark_uncacheable_sets_cache_headers() {
+        let mut headers = HeaderMap::new();
+        mark_uncacheable(&mut headers);
+
+        assert_eq!(
+            headers
+                .get("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store, no-cache, must-revalidate")
+        );
+        assert_eq!(
+            headers.get("pragma").and_then(|value| value.to_str().ok()),
+            Some("no-cache")
+        );
+        assert_eq!(
+            headers.get("expires").and_then(|value| value.to_str().ok()),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn load_templates_registers_wake_status_and_sanitize_next_rejects_external_urls() {
+        let tera = load_templates().expect("templates");
+        let names = tera.get_template_names().collect::<Vec<_>>();
+        assert!(names.contains(&"wake-status.html"));
+        assert!(names.contains(&"login.html"));
+        assert!(names.contains(&"error.html"));
+
+        assert_eq!(sanitize_next(Some("/ok")), Some("/ok".to_string()));
+        assert_eq!(sanitize_next(Some("//evil.example")), None);
+        assert_eq!(sanitize_next(Some("https://evil.example")), None);
     }
 }

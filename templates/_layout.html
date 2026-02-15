@@ -144,6 +144,11 @@
       cursor: pointer;
     }
 
+    button:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+    }
+
     .button-link.secondary {
       border: 1px solid #a7bda7;
       background: #f2f7ef;
@@ -155,6 +160,10 @@
       gap: 0.6rem;
       flex-wrap: wrap;
       margin-top: 0.25rem;
+    }
+
+    .hidden {
+      display: none;
     }
 
     pre {

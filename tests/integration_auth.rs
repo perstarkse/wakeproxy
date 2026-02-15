@@ -241,3 +241,26 @@ async fn missing_template_returns_internal_server_error() {
         "Template rendering failed"
     );
 }
+
+#[tokio::test]
+async fn unauthenticated_wake_route_redirects_to_login() {
+    let upstream = spawn_upstream().await;
+    let config = build_config(upstream.addr.port(), "password-wake-auth");
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+
+    let response = client
+        .get(format!("{}/_wake?next=%2Fdemo", gateway.url()))
+        .send()
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
+    assert_eq!(
+        response
+            .headers()
+            .get(LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("/_auth/login?next=%2F_wake%3Fnext%3D%252Fdemo")
+    );
+}

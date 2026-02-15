@@ -25,7 +25,7 @@ pub struct Config {
     pub login_max_failures: usize,
     pub login_lockout: Duration,
     pub login_window: Duration,
-    pub edge_wait_timeout: Duration,
+    pub wake_poll_interval_ms: u64,
     pub trust_proxy_headers: bool,
     pub trusted_proxy_ips: Vec<IpAddr>,
     pub login_max_tracked_ips: usize,
@@ -112,7 +112,14 @@ impl Config {
             "WOL_PROXY_LOGIN_WINDOW_SECS",
             300,
         )?);
-        let edge_wait_timeout = parse_optional_secs(map, "WOL_PROXY_EDGE_WAIT_TIMEOUT", 20)?;
+        let wake_poll_interval_ms =
+            parse_optional::<u64>(map, "WOL_PROXY_WAKE_POLL_INTERVAL_MS", 2000)?;
+        if wake_poll_interval_ms == 0 {
+            return Err(ConfigError::InvalidValue {
+                name: "WOL_PROXY_WAKE_POLL_INTERVAL_MS",
+                value: "value must be greater than zero".to_string(),
+            });
+        }
         let trust_proxy_headers =
             parse_optional::<bool>(map, "WOL_PROXY_TRUST_PROXY_HEADERS", false)?;
         let trusted_proxy_ips = parse_ip_list(map, "WOL_PROXY_TRUSTED_PROXY_IPS")?;
@@ -137,7 +144,7 @@ impl Config {
             login_max_failures,
             login_lockout,
             login_window,
-            edge_wait_timeout,
+            wake_poll_interval_ms,
             trust_proxy_headers,
             trusted_proxy_ips,
             login_max_tracked_ips,
@@ -302,6 +309,7 @@ mod tests {
         assert_eq!(config.upstream_host, "charon.lan");
         assert_eq!(config.wake_timeout.as_secs(), 180);
         assert_eq!(config.poll_interval.as_secs(), 2);
+        assert_eq!(config.wake_poll_interval_ms, 2000);
     }
 
     #[test]
@@ -461,11 +469,30 @@ mod tests {
         let mut env = valid_env();
         env.insert("WOL_PROXY_SESSION_TTL_SECS".to_string(), "120".to_string());
         env.insert("WOL_PROXY_LOGIN_LOCKOUT_SECS".to_string(), "9".to_string());
-        env.insert("WOL_PROXY_EDGE_WAIT_TIMEOUT".to_string(), "7".to_string());
+        env.insert(
+            "WOL_PROXY_WAKE_POLL_INTERVAL_MS".to_string(),
+            "1500".to_string(),
+        );
 
         let config = Config::from_map(&env).expect("config");
         assert_eq!(config.session_ttl.as_secs(), 120);
         assert_eq!(config.login_lockout.as_secs(), 9);
-        assert_eq!(config.edge_wait_timeout.as_secs(), 7);
+        assert_eq!(config.wake_poll_interval_ms, 1500);
+    }
+
+    #[test]
+    fn config_fails_on_zero_wake_poll_interval_ms() {
+        let mut env = valid_env();
+        env.insert(
+            "WOL_PROXY_WAKE_POLL_INTERVAL_MS".to_string(),
+            "0".to_string(),
+        );
+        assert!(matches!(
+            Config::from_map(&env),
+            Err(ConfigError::InvalidValue {
+                name: "WOL_PROXY_WAKE_POLL_INTERVAL_MS",
+                ..
+            })
+        ));
     }
 }

@@ -1,0 +1,104 @@
+{% extends "_layout.html" %}
+
+{% block title %}Wake Status{% endblock title %}
+
+{% block head_extra %}
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const root = document.querySelector("[data-wake-root]");
+    if (!root) {
+      return;
+    }
+
+    const next = root.dataset.next || "/";
+    const pollInterval = Number(root.dataset.pollIntervalMs || "2000");
+    const stateNode = document.querySelector("[data-state]");
+    const messageNode = document.querySelector("[data-message]");
+    const cycleNode = document.querySelector("[data-cycle]");
+    const actionButton = document.querySelector("[data-wake-action]");
+    const reasonNode = document.querySelector("[data-reason]");
+
+    const setButtonState = (retryable, ready) => {
+      if (!actionButton) {
+        return;
+      }
+
+      if (ready) {
+        actionButton.disabled = true;
+        actionButton.textContent = "Redirecting...";
+        return;
+      }
+
+      if (retryable) {
+        actionButton.disabled = false;
+        actionButton.textContent = "Wake and connect";
+      } else {
+        actionButton.disabled = true;
+        actionButton.textContent = "Wake in progress...";
+      }
+    };
+
+    const applyPayload = (payload) => {
+      if (stateNode) {
+        stateNode.textContent = payload.state;
+      }
+      if (messageNode) {
+        messageNode.textContent = payload.message;
+      }
+      if (cycleNode) {
+        cycleNode.textContent = payload.cycle_id ? String(payload.cycle_id) : "-";
+      }
+      if (reasonNode) {
+        reasonNode.textContent = payload.reason || "";
+        reasonNode.classList.toggle("hidden", !payload.reason);
+      }
+
+      setButtonState(payload.retryable, payload.ready);
+
+      if (payload.ready && payload.redirect_to) {
+        window.location.replace(payload.redirect_to);
+      }
+    };
+
+    const poll = async () => {
+      const query = new URLSearchParams({ next }).toString();
+      const response = await fetch(`/_wake/poll?${query}`, {
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = await response.json();
+      applyPayload(payload);
+    };
+
+    setButtonState(root.dataset.retryable === "true", root.dataset.ready === "true");
+    setInterval(() => {
+      void poll();
+    }, pollInterval);
+  });
+</script>
+{% endblock head_extra %}
+
+{% block body %}
+<div data-wake-root data-next="{{ next }}" data-poll-interval-ms="{{ poll_interval_ms }}" data-ready="false" data-retryable="{{ retryable }}">
+  <h1>Remote system status</h1>
+  <p class="muted">Destination: <code>{{ next }}</code></p>
+  <p>
+    Current state:
+    <span class="status-badge" data-state>{{ state }}</span>
+  </p>
+  <p class="alert" data-message>{{ status_message }}</p>
+  <p class="muted">Wake cycle: <strong data-cycle>{% if cycle_known %}{{ cycle_id }}{% else %}-{% endif %}</strong></p>
+  <p class="alert danger {% if reason == "" %}hidden{% endif %}" data-reason>{% if reason != "" %}{{ reason }}{% endif %}</p>
+
+  <form method="post" action="/_wake/start" class="actions">
+    <input type="hidden" name="next" value="{{ next }}" />
+    <button type="submit" data-wake-action>{% if retryable %}Wake and connect{% else %}Wake in progress...{% endif %}</button>
+    <a class="button-link secondary" href="/_auth/login">Back to login</a>
+  </form>
+</div>
+{% endblock body %}

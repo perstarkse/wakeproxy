@@ -1,6 +1,6 @@
 # wol-web-proxy
 
-Axum-based gateway that protects an upstream app with password login, wakes it via Wake-on-LAN, waits for readiness (`ping` + HTTP health), and then proxies full requests.
+Axum-based gateway that protects an upstream app with password login. If the upstream is asleep, authenticated users land on a wake status page and can explicitly start Wake-on-LAN; the gateway then polls readiness (`ping` + HTTP health) and redirects to the requested path when ready.
 
 ## Required environment variables
 
@@ -25,7 +25,7 @@ Axum-based gateway that protects an upstream app with password login, wakes it v
 - `WOL_PROXY_LOGIN_LOCKOUT_SECS` (default: `60`)
 - `WOL_PROXY_LOGIN_WINDOW_SECS` (default: `300`)
 - `WOL_PROXY_LOGIN_MAX_TRACKED_IPS` (default: `10000`)
-- `WOL_PROXY_EDGE_WAIT_TIMEOUT` (default: `20`)
+- `WOL_PROXY_WAKE_POLL_INTERVAL_MS` (default: `2000`)
 - `WOL_PROXY_TRUST_PROXY_HEADERS` (default: `false`)
 - `WOL_PROXY_TRUSTED_PROXY_IPS` (default: empty, comma-separated IPs)
 

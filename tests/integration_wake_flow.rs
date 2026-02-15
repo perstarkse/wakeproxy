@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use axum::http::header::COOKIE;
+use axum::http::header::{COOKIE, LOCATION};
 
 mod common;
 
@@ -10,71 +10,201 @@ use common::{
 };
 
 #[tokio::test]
-async fn wake_sender_failure_returns_unhealthy_template() {
+async fn sleeping_upstream_redirects_authenticated_requests_to_wake_page() {
     let upstream = spawn_upstream().await;
-    let config = build_config(upstream.addr.port(), "password-4");
-    let gateway = spawn_gateway(config, FailingWakeSender, AlwaysReadyProbe).await;
+    let mut config = build_config(upstream.addr.port(), "password-4");
+    config.wake_poll_interval_ms = 20;
+    let gateway = spawn_gateway(config, OkWakeSender, NeverReadyProbe).await;
     let client = test_client();
 
     let cookie = login_and_extract_cookie(&client, &gateway.url(), "password-4").await;
 
     let response = client
-        .get(format!("{}/demo", gateway.url()))
+        .get(format!("{}/demo?x=1", gateway.url()))
         .header(COOKIE, &cookie)
         .send()
         .await
         .expect("response");
 
-    assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
-    let body = response.text().await.expect("body");
-    assert!(body.contains("Upstream is unhealthy"));
+    assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
+    assert_eq!(
+        response
+            .headers()
+            .get(LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("/_wake?next=%2Fdemo%3Fx%3D1")
+    );
 }
 
 #[tokio::test]
-async fn wake_timeout_returns_timeout_template() {
+async fn wake_page_renders_status_when_upstream_is_sleeping() {
+    let upstream = spawn_upstream().await;
+    let mut config = build_config(upstream.addr.port(), "password-wake-page");
+    config.wake_poll_interval_ms = 20;
+    let gateway = spawn_gateway(config, OkWakeSender, NeverReadyProbe).await;
+    let client = test_client();
+
+    let cookie = login_and_extract_cookie(&client, &gateway.url(), "password-wake-page").await;
+
+    let response = client
+        .get(format!("{}/_wake?next=%2Fdemo", gateway.url()))
+        .header(COOKIE, &cookie)
+        .send()
+        .await
+        .expect("wake page response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store, no-cache, must-revalidate")
+    );
+    let body = response.text().await.expect("body");
+    assert!(body.contains("Remote system status"));
+    assert!(body.contains("Wake and connect"));
+}
+
+#[tokio::test]
+async fn wake_sender_failure_surfaces_failed_state_in_polling_api() {
     let upstream = spawn_upstream().await;
     let mut config = build_config(upstream.addr.port(), "password-5");
-    config.wake_timeout = Duration::from_millis(200);
-    config.poll_interval = Duration::from_millis(40);
-    config.edge_wait_timeout = Duration::from_secs(1);
-
-    let gateway = spawn_gateway(config, OkWakeSender, NeverReadyProbe).await;
+    config.wake_poll_interval_ms = 20;
+    let gateway = spawn_gateway(config, FailingWakeSender, NeverReadyProbe).await;
     let client = test_client();
 
     let cookie = login_and_extract_cookie(&client, &gateway.url(), "password-5").await;
 
-    let response = client
-        .get(format!("{}/demo", gateway.url()))
+    let start = client
+        .post(format!("{}/_wake/start", gateway.url()))
+        .header(COOKIE, &cookie)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("next=%2Fdemo")
+        .send()
+        .await
+        .expect("wake start response");
+    assert_eq!(start.status(), reqwest::StatusCode::SEE_OTHER);
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let poll = client
+        .get(format!("{}/_wake/poll?next=%2Fdemo", gateway.url()))
         .header(COOKIE, &cookie)
         .send()
         .await
-        .expect("response");
+        .expect("poll response");
 
-    assert_eq!(response.status(), reqwest::StatusCode::GATEWAY_TIMEOUT);
-    let body = response.text().await.expect("body");
-    assert!(body.contains("did not wake in time"));
+    assert_eq!(poll.status(), reqwest::StatusCode::OK);
+    let body = poll.text().await.expect("poll body");
+    assert!(body.contains("\"state\":\"failed\""));
+    assert!(body.contains("\"ready\":false"));
+    assert!(body.contains("\"retryable\":true"));
+    assert!(body.contains("simulated wake sender failure"));
 }
 
 #[tokio::test]
-async fn edge_timeout_returns_still_waking_template() {
+async fn wake_timeout_surfaces_timed_out_state_in_polling_api() {
     let upstream = spawn_upstream().await;
-    let mut config = build_config(upstream.addr.port(), "password-still-waking");
-    config.wake_timeout = Duration::from_secs(2);
-    config.poll_interval = Duration::from_millis(100);
-    config.edge_wait_timeout = Duration::from_millis(10);
+    let mut config = build_config(upstream.addr.port(), "password-timeout");
+    config.wake_timeout = Duration::from_millis(120);
+    config.poll_interval = Duration::from_millis(30);
+    config.wake_poll_interval_ms = 20;
 
     let gateway = spawn_gateway(config, OkWakeSender, NeverReadyProbe).await;
     let client = test_client();
-    let cookie = login_and_extract_cookie(&client, &gateway.url(), "password-still-waking").await;
+    let cookie = login_and_extract_cookie(&client, &gateway.url(), "password-timeout").await;
 
-    let response = client
-        .get(format!("{}/demo", gateway.url()))
-        .header(COOKIE, cookie)
+    let start = client
+        .post(format!("{}/_wake/start", gateway.url()))
+        .header(COOKIE, &cookie)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("next=%2Fdemo")
         .send()
         .await
-        .expect("response");
+        .expect("wake start response");
+    assert_eq!(start.status(), reqwest::StatusCode::SEE_OTHER);
 
-    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
-    let body = response.text().await.expect("body");
-    assert!(body.contains("still waking"));
+    tokio::time::sleep(Duration::from_millis(220)).await;
+
+    let poll = client
+        .get(format!("{}/_wake/poll?next=%2Fdemo", gateway.url()))
+        .header(COOKIE, &cookie)
+        .send()
+        .await
+        .expect("poll response");
+
+    assert_eq!(poll.status(), reqwest::StatusCode::OK);
+    let body = poll.text().await.expect("poll body");
+    assert!(body.contains("\"state\":\"timed_out\""));
+    assert!(body.contains("\"ready\":false"));
+    assert!(body.contains("\"retryable\":true"));
+}
+
+#[tokio::test]
+async fn wake_page_redirects_to_target_when_upstream_is_already_ready() {
+    let upstream = spawn_upstream().await;
+    let mut config = build_config(upstream.addr.port(), "password-6");
+    config.wake_poll_interval_ms = 20;
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+
+    let cookie = login_and_extract_cookie(&client, &gateway.url(), "password-6").await;
+
+    let response = client
+        .get(format!("{}/_wake?next=%2Fdemo", gateway.url()))
+        .header(COOKIE, &cookie)
+        .send()
+        .await
+        .expect("wake page response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
+    assert_eq!(
+        response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("/demo")
+    );
+}
+
+#[tokio::test]
+async fn wake_start_redirects_directly_when_upstream_is_already_ready() {
+    let upstream = spawn_upstream().await;
+    let mut config = build_config(upstream.addr.port(), "password-ready-start");
+    config.wake_poll_interval_ms = 20;
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+
+    let cookie = login_and_extract_cookie(&client, &gateway.url(), "password-ready-start").await;
+
+    let first_start = client
+        .post(format!("{}/_wake/start", gateway.url()))
+        .header(COOKIE, &cookie)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("next=%2Fdemo")
+        .send()
+        .await
+        .expect("first wake start response");
+    assert_eq!(first_start.status(), reqwest::StatusCode::SEE_OTHER);
+
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    let response = client
+        .post(format!("{}/_wake/start", gateway.url()))
+        .header(COOKIE, &cookie)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("next=%2Fdemo")
+        .send()
+        .await
+        .expect("wake start response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
+    assert_eq!(
+        response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("/demo")
+    );
 }
