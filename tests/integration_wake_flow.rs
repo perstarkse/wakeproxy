@@ -63,6 +63,8 @@ async fn wake_page_renders_status_when_upstream_is_sleeping() {
     );
     let body = response.text().await.expect("body");
     assert!(body.contains("Remote system status"));
+    assert!(body.contains("data-wake-state=\"sleeping\""));
+    assert!(body.contains("data-state-label"));
     assert!(body.contains("Wake and connect"));
 }
 

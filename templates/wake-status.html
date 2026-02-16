@@ -194,7 +194,7 @@
 
     const next = root.dataset.next || "/";
     const pollInterval = Number(root.dataset.pollIntervalMs || "2000");
-    const stateNode = document.querySelector("[data-state]");
+    const stateNode = document.querySelector("[data-state-label]");
     const messageNode = document.querySelector("[data-message]");
     const cycleNode = document.querySelector("[data-cycle]");
     const actionButton = document.querySelector("[data-wake-action]");
@@ -351,7 +351,7 @@
         reasonNode.classList.toggle("hidden", !payload.reason);
       }
 
-      root.dataset.state = payload.state;
+      root.dataset.wakeState = payload.state;
       setMessageTone(payload.state);
       setProgress(payload.state);
       setButtonState(payload.retryable, payload.ready);
@@ -432,14 +432,14 @@
       }
     };
 
-    setProgress(root.dataset.state || "sleeping");
-    setMessageTone(root.dataset.state || "sleeping");
+    setProgress(root.dataset.wakeState || "sleeping");
+    setMessageTone(root.dataset.wakeState || "sleeping");
     setPollIndicator("idle");
     updatePollMeta();
     setButtonState(root.dataset.retryable === "true", root.dataset.ready === "true");
 
     if (previewMode) {
-      previewIndex = Math.max(previewStates.indexOf(root.dataset.state || "sleeping"), 0);
+      previewIndex = Math.max(previewStates.indexOf(root.dataset.wakeState || "sleeping"), 0);
       if (!previewAuto) {
         setPollIndicator("idle");
         if (pollStateNode) {
@@ -462,7 +462,7 @@
 {% endblock head_extra %}
 
 {% block body %}
-<div data-wake-root data-next="{{ next }}" data-poll-interval-ms="{{ poll_interval_ms }}" data-ready="false" data-retryable="{{ retryable }}" data-state="{{ state }}" data-polling="idle" data-preview-mode="{{ preview_mode }}" data-preview-auto="{{ preview_auto }}">
+<div data-wake-root data-next="{{ next }}" data-poll-interval-ms="{{ poll_interval_ms }}" data-ready="false" data-retryable="{{ retryable }}" data-wake-state="{{ state }}" data-polling="idle" data-preview-mode="{{ preview_mode }}" data-preview-auto="{{ preview_auto }}">
   <div class="status-head">
     <h1>Remote system status</h1>
     <p class="live-chip" role="status" aria-live="polite">
@@ -490,7 +490,7 @@
   <div class="status-grid">
     <div class="status-kv">
       <p class="muted">Current state</p>
-      <p><span class="status-badge" data-state>{{ state }}</span></p>
+      <p><span class="status-badge" data-state-label>{{ state }}</span></p>
     </div>
     <div class="status-kv">
       <p class="muted">Wake cycle</p>
