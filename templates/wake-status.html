@@ -210,6 +210,8 @@
     let pollHealth = "idle";
     let pollInFlight = false;
     let previewIndex = 0;
+    let routeBoundToNext = false;
+    let readyNavigationIssued = false;
 
     const previewStates = [
       "sleeping",
@@ -356,8 +358,13 @@
       setProgress(payload.state);
       setButtonState(payload.retryable, payload.ready);
 
-      if (!previewMode && payload.ready && payload.redirect_to) {
-        window.location.replace(payload.redirect_to);
+      if (!previewMode && payload.ready && !readyNavigationIssued) {
+        readyNavigationIssued = true;
+        if (routeBoundToNext) {
+          window.location.reload();
+        } else if (payload.redirect_to) {
+          window.location.replace(payload.redirect_to);
+        }
       }
     };
 
@@ -437,6 +444,15 @@
     setPollIndicator("idle");
     updatePollMeta();
     setButtonState(root.dataset.retryable === "true", root.dataset.ready === "true");
+
+    if (!previewMode && window.history && typeof window.history.replaceState === "function") {
+      try {
+        window.history.replaceState(null, "", next);
+        routeBoundToNext = true;
+      } catch (_error) {
+        routeBoundToNext = false;
+      }
+    }
 
     if (previewMode) {
       previewIndex = Math.max(previewStates.indexOf(root.dataset.wakeState || "sleeping"), 0);
