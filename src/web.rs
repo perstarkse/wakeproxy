@@ -4,7 +4,9 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Form, Query, Request, State};
-use axum::http::header::{CACHE_CONTROL, EXPIRES, PRAGMA, RETRY_AFTER, SET_COOKIE};
+use axum::http::header::{
+    ACCEPT, CACHE_CONTROL, EXPIRES, PRAGMA, RETRY_AFTER, SET_COOKIE, USER_AGENT,
+};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect};
@@ -204,7 +206,7 @@ pub async fn login_submit(
     match state.auth.login(client_ip, &form.password).await {
         LoginResult::Success { cookie_header } => {
             info!(client_ip = %client_ip, "successful login");
-            let mut response = Redirect::to(next.as_deref().unwrap_or("/")).into_response();
+            let mut response = redirect_response(next.as_deref().unwrap_or("/"), Some(&headers));
             append_set_cookie(response.headers_mut(), cookie_header);
             response
         }
@@ -235,7 +237,7 @@ pub async fn logout_submit(
 ) -> axum::response::Response {
     state.auth.logout_from_headers(&headers).await;
 
-    let mut response = Redirect::to("/_auth/login").into_response();
+    let mut response = redirect_response("/_auth/login", Some(&headers));
     response
         .headers_mut()
         .append(SET_COOKIE, state.auth.clear_cookie_header());
@@ -244,13 +246,14 @@ pub async fn logout_submit(
 
 pub async fn wake_page(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<WakeQuery>,
 ) -> axum::response::Response {
     let next = sanitize_next(query.next.as_deref()).unwrap_or_else(|| "/".to_string());
     let snapshot = state.wake.status_snapshot().await;
 
     if snapshot.ready {
-        return Redirect::to(&next).into_response();
+        return redirect_response(&next, Some(&headers));
     }
 
     let mut context = Context::new();
@@ -321,17 +324,18 @@ pub async fn wake_preview_page(
 
 pub async fn wake_start_submit(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Form(form): Form<WakeStartForm>,
 ) -> axum::response::Response {
     let next = sanitize_next(form.next.as_deref()).unwrap_or_else(|| "/".to_string());
 
     if let WakeStartResult::AlreadyReady { .. } = state.wake.start_wake().await {
-        return Redirect::to(&next).into_response();
+        return redirect_response(&next, Some(&headers));
     }
 
     let encoded_next = urlencoding::encode(&next);
     let target = format!("/_wake?next={encoded_next}");
-    Redirect::to(&target).into_response()
+    redirect_response(&target, Some(&headers))
 }
 
 pub async fn wake_poll(
@@ -382,7 +386,7 @@ pub async fn auth_guard_middleware(
             .unwrap_or("/"),
     );
     let target = format!("/_auth/login?next={encoded_next}");
-    Redirect::to(&target).into_response()
+    redirect_response(&target, Some(request.headers()))
 }
 
 pub async fn readiness_gate_middleware(
@@ -405,7 +409,7 @@ pub async fn readiness_gate_middleware(
 
     if request.method() == Method::GET || request.method() == Method::HEAD {
         let target = format!("/_wake?next={encoded_next}");
-        return Redirect::to(&target).into_response();
+        return redirect_response(&target, Some(request.headers()));
     }
 
     let mut response = (
@@ -611,13 +615,96 @@ fn sanitize_next(next: Option<&str>) -> Option<String> {
     }
 }
 
+fn redirect_response(
+    target: &str,
+    request_headers: Option<&HeaderMap>,
+) -> axum::response::Response {
+    if request_headers.is_some_and(should_use_soft_redirect) {
+        return soft_redirect_response(target);
+    }
+
+    Redirect::to(target).into_response()
+}
+
+fn should_use_soft_redirect(headers: &HeaderMap) -> bool {
+    is_ios_user_agent(headers) && is_document_navigation(headers)
+}
+
+fn is_ios_user_agent(headers: &HeaderMap) -> bool {
+    let Some(user_agent) = headers
+        .get(USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+
+    let lower = user_agent.to_ascii_lowercase();
+    lower.contains("iphone")
+        || lower.contains("ipad")
+        || lower.contains("ipod")
+        || (lower.contains("macintosh") && lower.contains("mobile"))
+}
+
+fn is_document_navigation(headers: &HeaderMap) -> bool {
+    if let Some(destination) = headers
+        .get("sec-fetch-dest")
+        .and_then(|value| value.to_str().ok())
+        && destination.eq_ignore_ascii_case("document")
+    {
+        return true;
+    }
+
+    headers
+        .get(ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .map(|accept| accept.contains("text/html") || accept.contains("application/xhtml+xml"))
+        .unwrap_or(false)
+}
+
+fn soft_redirect_response(target: &str) -> axum::response::Response {
+    let escaped_target = escape_js_string(target);
+    let body = format!(
+        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"mobile-web-app-capable\" content=\"yes\"><meta name=\"apple-mobile-web-app-capable\" content=\"yes\"><meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\"><meta name=\"theme-color\" content=\"#eef4ed\"><title>Redirecting</title></head><body><script>window.location.replace(\"{escaped_target}\");</script><noscript>Redirecting...</noscript></body></html>",
+    );
+    let mut response = body.into_response();
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    mark_uncacheable(response.headers_mut());
+    response
+}
+
+fn escape_js_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '<' => escaped.push_str("\\u003C"),
+            '>' => escaped.push_str("\\u003E"),
+            '&' => escaped.push_str("\\u0026"),
+            '\u{2028}' => escaped.push_str("\\u2028"),
+            '\u{2029}' => escaped.push_str("\\u2029"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 #[cfg(test)]
 mod tests {
-    use axum::http::HeaderMap;
+    use axum::body::to_bytes;
+    use axum::http::header::{ACCEPT, LOCATION, USER_AGENT};
+    use axum::http::{HeaderMap, HeaderValue, StatusCode};
 
     use super::{
-        load_templates, mark_uncacheable, preview_auto_from_label, sanitize_next, wake_retryable,
-        wake_state_from_label, wake_state_label, wake_status_message,
+        load_templates, mark_uncacheable, preview_auto_from_label, redirect_response,
+        sanitize_next, wake_retryable, wake_state_from_label, wake_state_label,
+        wake_status_message,
     };
     use crate::wake::WakeState;
 
@@ -737,5 +824,43 @@ mod tests {
         assert!(!preview_auto_from_label("0"));
         assert!(!preview_auto_from_label("false"));
         assert!(!preview_auto_from_label("no"));
+    }
+
+    #[test]
+    fn redirect_response_uses_http_redirect_for_non_ios_requests() {
+        let headers = HeaderMap::new();
+        let response = redirect_response("/target", Some(&headers));
+
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response
+                .headers()
+                .get(LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("/target")
+        );
+    }
+
+    #[tokio::test]
+    async fn redirect_response_uses_soft_redirect_for_ios_document_navigation() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_static(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+            ),
+        );
+        headers.insert(ACCEPT, HeaderValue::from_static("text/html"));
+
+        let response = redirect_response("/target?x=1", Some(&headers));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(LOCATION).is_none());
+
+        let body = to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body bytes");
+        let body_text = String::from_utf8_lossy(&body);
+        assert!(body_text.contains("window.location.replace(\"/target?x=1\")"));
+        assert!(body_text.contains("apple-mobile-web-app-capable"));
     }
 }

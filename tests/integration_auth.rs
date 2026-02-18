@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::http::header::{COOKIE, LOCATION, SET_COOKIE};
+use axum::http::header::{ACCEPT, COOKIE, LOCATION, SET_COOKIE, USER_AGENT};
 use tera::Tera;
 
 mod common;
@@ -31,6 +31,30 @@ async fn unauthenticated_proxy_request_redirects_to_login() {
             .and_then(|v| v.to_str().ok()),
         Some("/_auth/login?next=%2Fdemo%3Fx%3D1")
     );
+}
+
+#[tokio::test]
+async fn unauthenticated_ios_document_navigation_uses_soft_redirect_to_login() {
+    let upstream = spawn_upstream().await;
+    let config = build_config(upstream.addr.port(), "password-ios-login-redirect");
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+
+    let response = client
+        .get(format!("{}/demo?x=1", gateway.url()))
+        .header(
+            USER_AGENT,
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+        )
+        .header(ACCEPT, "text/html")
+        .send()
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert!(response.headers().get(LOCATION).is_none());
+    let body = response.text().await.expect("body");
+    assert!(body.contains("window.location.replace(\"/_auth/login?next=%2Fdemo%3Fx%3D1\")"));
 }
 
 #[tokio::test]

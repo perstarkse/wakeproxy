@@ -2,8 +2,8 @@ use std::net::IpAddr;
 
 use axum::body::Body;
 use axum::http::header::{
-    CONNECTION, HOST, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE, TRAILER, TRANSFER_ENCODING,
-    UPGRADE,
+    ACCEPT, CONNECTION, HOST, LOCATION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE, TRAILER,
+    TRANSFER_ENCODING, UPGRADE, USER_AGENT,
 };
 use axum::http::uri::InvalidUri;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, Response, Uri};
@@ -45,6 +45,7 @@ impl ProxyService {
         client_ip: IpAddr,
         trust_incoming_forwarded: bool,
     ) -> Result<Response<Body>, ProxyError> {
+        let soft_redirect_enabled = should_use_soft_redirect(req.headers());
         let is_upgrade = is_upgrade_request(req.headers());
         let on_client_upgrade = if is_upgrade {
             Some(upgrade::on(&mut req))
@@ -67,6 +68,17 @@ impl ProxyService {
         let preserve_upgrade_headers =
             is_upgrade && upstream_response.status() == StatusCode::SWITCHING_PROTOCOLS;
         strip_hop_by_hop_headers(upstream_response.headers_mut(), preserve_upgrade_headers);
+        rewrite_upstream_redirect_location(upstream_response.headers_mut(), &self.config);
+
+        if soft_redirect_enabled
+            && upstream_response.status().is_redirection()
+            && let Some(target) = upstream_response
+                .headers()
+                .get(LOCATION)
+                .and_then(|value| value.to_str().ok())
+        {
+            return Ok(soft_redirect_response(target));
+        }
 
         if is_upgrade
             && upstream_response.status() == StatusCode::SWITCHING_PROTOCOLS
@@ -193,6 +205,131 @@ fn is_upgrade_request(headers: &HeaderMap) -> bool {
             .unwrap_or(false)
 }
 
+fn rewrite_upstream_redirect_location(headers: &mut HeaderMap, config: &Config) {
+    let Some(location) = headers.get(LOCATION).and_then(|value| value.to_str().ok()) else {
+        return;
+    };
+
+    let Some(rewritten) = rewrite_upstream_redirect_target(location, config) else {
+        return;
+    };
+
+    if let Ok(value) = HeaderValue::from_str(&rewritten) {
+        headers.insert(LOCATION, value);
+    }
+}
+
+fn rewrite_upstream_redirect_target(location: &str, config: &Config) -> Option<String> {
+    let uri = location.parse::<Uri>().ok()?;
+    let scheme = uri.scheme_str()?;
+    let host = uri.host()?;
+    if !hosts_match(host, &config.upstream_host) {
+        return None;
+    }
+
+    let port = uri.port_u16().unwrap_or_else(|| {
+        if scheme.eq_ignore_ascii_case("https") {
+            443
+        } else {
+            80
+        }
+    });
+    if port != config.upstream_port {
+        return None;
+    }
+
+    Some(
+        uri.path_and_query()
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_else(|| "/".to_string()),
+    )
+}
+
+fn hosts_match(left: &str, right: &str) -> bool {
+    left.trim_matches(&['[', ']'][..])
+        .eq_ignore_ascii_case(right.trim_matches(&['[', ']'][..]))
+}
+
+fn should_use_soft_redirect(headers: &HeaderMap) -> bool {
+    is_ios_user_agent(headers) && is_document_navigation(headers)
+}
+
+fn is_ios_user_agent(headers: &HeaderMap) -> bool {
+    let Some(user_agent) = headers
+        .get(USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+
+    let lower = user_agent.to_ascii_lowercase();
+    lower.contains("iphone")
+        || lower.contains("ipad")
+        || lower.contains("ipod")
+        || (lower.contains("macintosh") && lower.contains("mobile"))
+}
+
+fn is_document_navigation(headers: &HeaderMap) -> bool {
+    if let Some(destination) = headers
+        .get("sec-fetch-dest")
+        .and_then(|value| value.to_str().ok())
+        && destination.eq_ignore_ascii_case("document")
+    {
+        return true;
+    }
+
+    headers
+        .get(ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .map(|accept| accept.contains("text/html") || accept.contains("application/xhtml+xml"))
+        .unwrap_or(false)
+}
+
+fn soft_redirect_response(target: &str) -> Response<Body> {
+    let escaped_target = escape_js_string(target);
+    let body = format!(
+        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"mobile-web-app-capable\" content=\"yes\"><meta name=\"apple-mobile-web-app-capable\" content=\"yes\"><meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\"><meta name=\"theme-color\" content=\"#eef4ed\"><title>Redirecting</title></head><body><script>window.location.replace(\"{escaped_target}\");</script><noscript>Redirecting...</noscript></body></html>",
+    );
+
+    let mut response = Response::new(Body::from(body));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
+    );
+    response.headers_mut().insert(
+        axum::http::header::PRAGMA,
+        HeaderValue::from_static("no-cache"),
+    );
+    response
+        .headers_mut()
+        .insert(axum::http::header::EXPIRES, HeaderValue::from_static("0"));
+    response
+}
+
+fn escape_js_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '<' => escaped.push_str("\\u003C"),
+            '>' => escaped.push_str("\\u003E"),
+            '&' => escaped.push_str("\\u0026"),
+            '\u{2028}' => escaped.push_str("\\u2028"),
+            '\u{2029}' => escaped.push_str("\\u2029"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 async fn bridge_upgrade_streams<C, U, CS, US, CE, UE>(client_upgrade: C, upstream_upgrade: U)
 where
     C: std::future::Future<Output = Result<CS, CE>>,
@@ -224,7 +361,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use axum::body::Body;
-    use axum::http::header::{CONNECTION, HOST, UPGRADE};
+    use axum::http::header::{ACCEPT, CONNECTION, HOST, UPGRADE, USER_AGENT};
     use axum::http::{HeaderMap, HeaderValue, Request, Uri};
     use hyper_util::client::legacy::Client;
     use hyper_util::client::legacy::connect::HttpConnector;
@@ -236,6 +373,8 @@ mod tests {
     use super::apply_forwarded_headers;
     use super::bridge_upgrade_streams;
     use super::build_upstream_uri;
+    use super::rewrite_upstream_redirect_target;
+    use super::should_use_soft_redirect;
     use super::strip_hop_by_hop_headers;
 
     fn build_config_with_host(host: &str) -> Config {
@@ -411,5 +550,37 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn rewrite_upstream_redirect_target_rewrites_absolute_target() {
+        let config = build_config_with_host("127.0.0.1");
+        let rewritten = rewrite_upstream_redirect_target("http://127.0.0.1:3000/demo?x=1", &config);
+
+        assert_eq!(rewritten.as_deref(), Some("/demo?x=1"));
+    }
+
+    #[test]
+    fn rewrite_upstream_redirect_target_keeps_external_target_unchanged() {
+        let config = build_config_with_host("127.0.0.1");
+        let rewritten = rewrite_upstream_redirect_target("https://example.com/demo", &config);
+
+        assert!(rewritten.is_none());
+    }
+
+    #[test]
+    fn should_use_soft_redirect_only_for_ios_document_requests() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_static(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+            ),
+        );
+        headers.insert(ACCEPT, HeaderValue::from_static("text/html"));
+        assert!(should_use_soft_redirect(&headers));
+
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        assert!(!should_use_soft_redirect(&headers));
     }
 }

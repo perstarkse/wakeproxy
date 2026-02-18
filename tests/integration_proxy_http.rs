@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::http::header::COOKIE;
+use axum::http::header::{ACCEPT, COOKIE, LOCATION, USER_AGENT};
 use tera::Tera;
 use tokio::net::TcpListener;
 
@@ -151,4 +151,57 @@ async fn non_get_request_returns_503_when_upstream_is_not_ready() {
             .and_then(|value| value.to_str().ok()),
         Some("3")
     );
+}
+
+#[tokio::test]
+async fn proxied_absolute_redirect_is_rewritten_to_relative_location() {
+    let upstream = spawn_upstream().await;
+    let config = build_config(upstream.addr.port(), "password-rewrite-redirect");
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+    let cookie =
+        login_and_extract_cookie(&client, &gateway.url(), "password-rewrite-redirect").await;
+
+    let response = client
+        .get(format!("{}/redirect-abs", gateway.url()))
+        .header(COOKIE, cookie)
+        .send()
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
+    assert_eq!(
+        response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("/demo?from=absolute")
+    );
+}
+
+#[tokio::test]
+async fn proxied_redirect_uses_soft_redirect_for_ios_document_navigation() {
+    let upstream = spawn_upstream().await;
+    let config = build_config(upstream.addr.port(), "password-ios-proxy-redirect");
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+    let cookie =
+        login_and_extract_cookie(&client, &gateway.url(), "password-ios-proxy-redirect").await;
+
+    let response = client
+        .get(format!("{}/redirect-abs", gateway.url()))
+        .header(COOKIE, cookie)
+        .header(
+            USER_AGENT,
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+        )
+        .header(ACCEPT, "text/html")
+        .send()
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert!(response.headers().get(LOCATION).is_none());
+    let body = response.text().await.expect("body");
+    assert!(body.contains("window.location.replace(\"/demo?from=absolute\")"));
 }

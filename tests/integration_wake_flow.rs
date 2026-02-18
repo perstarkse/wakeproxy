@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use axum::http::header::{COOKIE, LOCATION};
+use axum::http::header::{ACCEPT, COOKIE, LOCATION, USER_AGENT};
 
 mod common;
 
@@ -170,6 +170,35 @@ async fn wake_page_redirects_to_target_when_upstream_is_already_ready() {
             .and_then(|value| value.to_str().ok()),
         Some("/demo")
     );
+}
+
+#[tokio::test]
+async fn wake_page_ready_on_ios_document_navigation_uses_soft_redirect() {
+    let upstream = spawn_upstream().await;
+    let mut config = build_config(upstream.addr.port(), "password-ios-wake-redirect");
+    config.wake_poll_interval_ms = 20;
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+
+    let cookie =
+        login_and_extract_cookie(&client, &gateway.url(), "password-ios-wake-redirect").await;
+
+    let response = client
+        .get(format!("{}/_wake?next=%2Fdemo", gateway.url()))
+        .header(COOKIE, &cookie)
+        .header(
+            USER_AGENT,
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+        )
+        .header(ACCEPT, "text/html")
+        .send()
+        .await
+        .expect("wake page response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert!(response.headers().get(LOCATION).is_none());
+    let body = response.text().await.expect("body");
+    assert!(body.contains("window.location.replace(\"/demo\")"));
 }
 
 #[tokio::test]

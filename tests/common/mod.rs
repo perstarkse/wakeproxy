@@ -14,7 +14,7 @@ use axum::extract::{
     Request,
     ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade},
 };
-use axum::http::header::SET_COOKIE;
+use axum::http::header::{HOST, SET_COOKIE};
 use axum::response::IntoResponse;
 use axum::routing::{any, get};
 use axum::{Router, serve};
@@ -276,6 +276,20 @@ pub async fn spawn_upstream() -> ServerHandle {
         ws.on_upgrade(handle_ws_echo)
     }
 
+    async fn redirect_relative() -> impl IntoResponse {
+        axum::response::Redirect::to("/demo?from=relative")
+    }
+
+    async fn redirect_absolute(headers: Request<Body>) -> impl IntoResponse {
+        let host = headers
+            .headers()
+            .get(HOST)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("127.0.0.1");
+        let target = format!("http://{host}/demo?from=absolute");
+        axum::response::Redirect::to(&target)
+    }
+
     async fn force_101() -> impl IntoResponse {
         http::StatusCode::SWITCHING_PROTOCOLS
     }
@@ -317,6 +331,8 @@ pub async fn spawn_upstream() -> ServerHandle {
         .route("/health", get(health))
         .route("/ws", get(ws_echo))
         .route("/force-101", get(force_101))
+        .route("/redirect-rel", get(redirect_relative))
+        .route("/redirect-abs", get(redirect_absolute))
         .fallback(any(echo));
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
