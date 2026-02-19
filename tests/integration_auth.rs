@@ -154,6 +154,20 @@ async fn pwa_manifest_and_touch_icon_are_publicly_available() {
             .and_then(|value| value.to_str().ok()),
         Some("image/png")
     );
+
+    let service_worker = client
+        .get(format!("{}/sw.js", gateway.url()))
+        .send()
+        .await
+        .expect("service worker response");
+    assert_eq!(service_worker.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        service_worker
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/javascript; charset=utf-8")
+    );
 }
 
 #[tokio::test]
