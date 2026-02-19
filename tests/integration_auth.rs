@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::http::header::{ACCEPT, COOKIE, LOCATION, SET_COOKIE, USER_AGENT};
+use axum::http::header::{ACCEPT, CONTENT_TYPE, COOKIE, LOCATION, SET_COOKIE, USER_AGENT};
 use tera::Tera;
 
 mod common;
@@ -76,6 +76,31 @@ async fn login_page_renders_html() {
 }
 
 #[tokio::test]
+async fn login_sets_persistent_session_cookie_max_age() {
+    let upstream = spawn_upstream().await;
+    let config = build_config(upstream.addr.port(), "password-persistent-cookie");
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+
+    let response = client
+        .post(format!("{}/_auth/login", gateway.url()))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("password=password-persistent-cookie&next=%2F")
+        .send()
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
+    let set_cookie = response
+        .headers()
+        .get(SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .expect("set-cookie header");
+    assert!(set_cookie.contains("wol_session="));
+    assert!(set_cookie.contains("Max-Age=43200"));
+}
+
+#[tokio::test]
 async fn gateway_health_endpoint_returns_ok() {
     let upstream = spawn_upstream().await;
     let config = build_config(upstream.addr.port(), "password-health");
@@ -90,6 +115,45 @@ async fn gateway_health_endpoint_returns_ok() {
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     assert_eq!(response.text().await.expect("body"), "ok");
+}
+
+#[tokio::test]
+async fn pwa_manifest_and_touch_icon_are_publicly_available() {
+    let upstream = spawn_upstream().await;
+    let config = build_config(upstream.addr.port(), "password-pwa-public-assets");
+    let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
+    let client = test_client();
+
+    let manifest = client
+        .get(format!("{}/manifest.webmanifest", gateway.url()))
+        .send()
+        .await
+        .expect("manifest response");
+    assert_eq!(manifest.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        manifest
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/manifest+json")
+    );
+    let body = manifest.text().await.expect("manifest body");
+    assert!(body.contains("\"display\":\"standalone\""));
+    assert!(body.contains("\"src\":\"/icons/icon-192.png\""));
+
+    let touch_icon = client
+        .get(format!("{}/apple-touch-icon.png", gateway.url()))
+        .send()
+        .await
+        .expect("icon response");
+    assert_eq!(touch_icon.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        touch_icon
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("image/png")
+    );
 }
 
 #[tokio::test]

@@ -26,6 +26,11 @@ use crate::config::Config;
 use crate::proxy::{ProxyError, ProxyService};
 use crate::wake::{WakeCoordinator, WakeStartResult, WakeState};
 
+const PWA_ICON_192_PNG: &[u8] = include_bytes!("../assets/icons/icon-192.png");
+const PWA_ICON_512_PNG: &[u8] = include_bytes!("../assets/icons/icon-512.png");
+const PWA_ICON_MASKABLE_512_PNG: &[u8] = include_bytes!("../assets/icons/icon-maskable-512.png");
+const APPLE_TOUCH_ICON_PNG: &[u8] = include_bytes!("../assets/icons/apple-touch-icon.png");
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
@@ -134,6 +139,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/_auth/login", post(login_submit))
         .route("/_auth/logout", post(logout_submit))
         .route("/_dev/wake-preview", get(wake_preview_page))
+        .route("/manifest.webmanifest", get(web_manifest))
+        .route("/apple-touch-icon.png", get(apple_touch_icon))
+        .route("/icons/icon-192.png", get(pwa_icon_192))
+        .route("/icons/icon-512.png", get(pwa_icon_512))
+        .route("/icons/icon-maskable-512.png", get(pwa_icon_maskable_512))
         .route("/_health", get(gateway_health))
         .merge(wake_router)
         .merge(protected_router)
@@ -185,6 +195,29 @@ pub struct WakePollPayload {
     message: &'static str,
     retryable: bool,
     reason: Option<String>,
+}
+
+#[derive(Serialize)]
+struct WebManifest {
+    name: &'static str,
+    short_name: &'static str,
+    id: &'static str,
+    start_url: &'static str,
+    scope: &'static str,
+    display: &'static str,
+    background_color: &'static str,
+    theme_color: &'static str,
+    description: &'static str,
+    icons: Vec<WebManifestIcon>,
+}
+
+#[derive(Serialize)]
+struct WebManifestIcon {
+    src: &'static str,
+    sizes: &'static str,
+    #[serde(rename = "type")]
+    mime_type: &'static str,
+    purpose: &'static str,
 }
 
 pub async fn login_page(
@@ -360,6 +393,66 @@ pub async fn wake_poll(
     response
 }
 
+pub async fn web_manifest() -> axum::response::Response {
+    let mut response = axum::Json(WebManifest {
+        name: "Wake Gateway",
+        short_name: "Wake",
+        id: "/",
+        start_url: "/",
+        scope: "/",
+        display: "standalone",
+        background_color: "#eef4ed",
+        theme_color: "#eef4ed",
+        description: "Secure wake-and-proxy gateway for your upstream app.",
+        icons: vec![
+            WebManifestIcon {
+                src: "/icons/icon-192.png",
+                sizes: "192x192",
+                mime_type: "image/png",
+                purpose: "any",
+            },
+            WebManifestIcon {
+                src: "/icons/icon-512.png",
+                sizes: "512x512",
+                mime_type: "image/png",
+                purpose: "any",
+            },
+            WebManifestIcon {
+                src: "/icons/icon-maskable-512.png",
+                sizes: "512x512",
+                mime_type: "image/png",
+                purpose: "any maskable",
+            },
+        ],
+    })
+    .into_response();
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/manifest+json"),
+    );
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=3600"),
+    );
+    response
+}
+
+pub async fn pwa_icon_192() -> axum::response::Response {
+    png_asset_response(PWA_ICON_192_PNG)
+}
+
+pub async fn pwa_icon_512() -> axum::response::Response {
+    png_asset_response(PWA_ICON_512_PNG)
+}
+
+pub async fn pwa_icon_maskable_512() -> axum::response::Response {
+    png_asset_response(PWA_ICON_MASKABLE_512_PNG)
+}
+
+pub async fn apple_touch_icon() -> axum::response::Response {
+    png_asset_response(APPLE_TOUCH_ICON_PNG)
+}
+
 pub async fn gateway_health() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
@@ -527,6 +620,19 @@ fn app_error_response(state: &AppState, error: AppError) -> axum::response::Resp
     }
 }
 
+fn png_asset_response(bytes: &'static [u8]) -> axum::response::Response {
+    let mut response = bytes.to_vec().into_response();
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("image/png"),
+    );
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=604800, immutable"),
+    );
+    response
+}
+
 fn extract_client_ip(config: &Config, headers: &HeaderMap, connect_info: SocketAddr) -> IpAddr {
     if !should_trust_proxy(config, connect_info) {
         return connect_info.ip();
@@ -664,7 +770,7 @@ fn is_document_navigation(headers: &HeaderMap) -> bool {
 fn soft_redirect_response(target: &str) -> axum::response::Response {
     let escaped_target = escape_js_string(target);
     let body = format!(
-        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"mobile-web-app-capable\" content=\"yes\"><meta name=\"apple-mobile-web-app-capable\" content=\"yes\"><meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\"><meta name=\"theme-color\" content=\"#eef4ed\"><title>Redirecting</title></head><body><script>window.location.replace(\"{escaped_target}\");</script><noscript>Redirecting...</noscript></body></html>",
+        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><meta name=\"mobile-web-app-capable\" content=\"yes\"><meta name=\"apple-mobile-web-app-capable\" content=\"yes\"><meta name=\"apple-mobile-web-app-title\" content=\"Wake Gateway\"><meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\"><meta name=\"theme-color\" content=\"#eef4ed\"><link rel=\"manifest\" href=\"/manifest.webmanifest\"><link rel=\"apple-touch-icon\" sizes=\"180x180\" href=\"/apple-touch-icon.png\"><title>Redirecting</title></head><body><script>window.location.replace(\"{escaped_target}\");</script><noscript>Redirecting...</noscript></body></html>",
     );
     let mut response = body.into_response();
     *response.status_mut() = StatusCode::OK;
@@ -698,13 +804,13 @@ fn escape_js_string(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use axum::body::to_bytes;
-    use axum::http::header::{ACCEPT, LOCATION, USER_AGENT};
+    use axum::http::header::{ACCEPT, CACHE_CONTROL, CONTENT_TYPE, LOCATION, USER_AGENT};
     use axum::http::{HeaderMap, HeaderValue, StatusCode};
 
     use super::{
-        load_templates, mark_uncacheable, preview_auto_from_label, redirect_response,
+        load_templates, mark_uncacheable, preview_auto_from_label, pwa_icon_192, redirect_response,
         sanitize_next, wake_retryable, wake_state_from_label, wake_state_label,
-        wake_status_message,
+        wake_status_message, web_manifest,
     };
     use crate::wake::WakeState;
 
@@ -862,5 +968,59 @@ mod tests {
         let body_text = String::from_utf8_lossy(&body);
         assert!(body_text.contains("window.location.replace(\"/target?x=1\")"));
         assert!(body_text.contains("apple-mobile-web-app-capable"));
+    }
+
+    #[tokio::test]
+    async fn web_manifest_exposes_standalone_shell_and_icons() {
+        let response = web_manifest().await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/manifest+json")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("public, max-age=3600")
+        );
+
+        let body = to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("manifest body");
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("\"display\":\"standalone\""));
+        assert!(text.contains("\"src\":\"/icons/icon-192.png\""));
+        assert!(text.contains("\"src\":\"/icons/icon-maskable-512.png\""));
+        assert!(text.contains("\"purpose\":\"any maskable\""));
+    }
+
+    #[tokio::test]
+    async fn pwa_icon_route_returns_png_with_cache_headers() {
+        let response = pwa_icon_192().await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("image/png")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("public, max-age=604800, immutable")
+        );
+
+        let body = to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("icon body");
+        assert!(!body.is_empty());
     }
 }

@@ -7,6 +7,7 @@ use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordVerifier};
 use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue};
+use cookie::time::Duration as CookieDuration;
 use cookie::{Cookie, SameSite};
 use rand::distr::{Alphanumeric, SampleString};
 use sha2::{Digest, Sha256};
@@ -153,6 +154,8 @@ impl AuthService {
         cookie.set_http_only(true);
         cookie.set_same_site(SameSite::Lax);
         cookie.set_secure(self.cookie_secure);
+        let ttl_seconds = self.session_ttl.as_secs().min(i64::MAX as u64) as i64;
+        cookie.set_max_age(CookieDuration::seconds(ttl_seconds));
 
         HeaderValue::from_str(&cookie.to_string()).expect("cookie header value")
     }
