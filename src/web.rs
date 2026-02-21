@@ -391,7 +391,14 @@ pub async fn wake_preview_page(
 ) -> axum::response::Response {
     #[cfg(not(debug_assertions))]
     {
-        let _ = (state, query);
+        let WakePreviewQuery {
+            next,
+            state: preview_state,
+            reason,
+            cycle_id,
+            auto,
+        } = query;
+        let _ = (state, next, preview_state, reason, cycle_id, auto);
         return (StatusCode::NOT_FOUND, "Not found").into_response();
     }
 
@@ -779,6 +786,7 @@ fn wake_retryable(state: WakeState) -> bool {
     )
 }
 
+#[cfg(any(test, debug_assertions))]
 fn wake_state_from_label(state: &str) -> Option<WakeState> {
     match state {
         "sleeping" => Some(WakeState::Sleeping),
@@ -792,6 +800,7 @@ fn wake_state_from_label(state: &str) -> Option<WakeState> {
     }
 }
 
+#[cfg(any(test, debug_assertions))]
 fn preview_auto_from_label(value: &str) -> bool {
     matches!(value, "1" | "true" | "yes" | "on")
 }
