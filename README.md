@@ -29,6 +29,14 @@ Axum-based gateway that protects an upstream app with password login. If the ups
 - `WOL_PROXY_TRUST_PROXY_HEADERS` (default: `false`)
 - `WOL_PROXY_TRUSTED_PROXY_IPS` (default: empty, comma-separated IPs)
 
+## Security assumptions and hardening
+
+- Keep `WOL_PROXY_TRUST_PROXY_HEADERS=false` unless the gateway is behind a known reverse proxy.
+- If proxy header trust is enabled, set `WOL_PROXY_TRUSTED_PROXY_IPS` to only your proxy hops and ensure your edge overwrites/sanitizes incoming `X-Forwarded-*` headers from clients.
+- CSRF protections for `POST /_auth/login`, `POST /_auth/logout`, and `POST /_wake/start` rely on same-origin `Origin`/`Referer` validation against `Host`; keep `Host` handling consistent through your proxy.
+- The gateway strips its own `wol_session` cookie before forwarding upstream requests, so upstream services do not receive gateway auth sessions.
+- iOS soft redirects only run for safe targets (relative paths or `http/https` URLs).
+
 ## Local run
 
 ```bash

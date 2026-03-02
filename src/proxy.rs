@@ -2,8 +2,8 @@ use std::net::IpAddr;
 
 use axum::body::Body;
 use axum::http::header::{
-    ACCEPT, CONNECTION, HOST, LOCATION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE, TRAILER,
-    TRANSFER_ENCODING, UPGRADE, USER_AGENT,
+    ACCEPT, CONNECTION, COOKIE, HOST, LOCATION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE,
+    TRAILER, TRANSFER_ENCODING, UPGRADE, USER_AGENT,
 };
 use axum::http::uri::InvalidUri;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, Response, Uri};
@@ -19,6 +19,8 @@ use tracing::warn;
 
 use crate::config::Config;
 use crate::config::format_host_for_url;
+
+const GATEWAY_SESSION_COOKIE_NAME: &str = "wol_session";
 
 #[derive(Clone)]
 pub struct ProxyService {
@@ -56,6 +58,7 @@ impl ProxyService {
         let proxied_uri = build_upstream_uri(&self.config, req.uri())?;
         *req.uri_mut() = proxied_uri;
         strip_hop_by_hop_headers(req.headers_mut(), is_upgrade);
+        strip_gateway_session_cookie(req.headers_mut());
         apply_forwarded_headers(req.headers_mut(), client_ip, trust_incoming_forwarded);
         req.headers_mut().insert(
             HOST,
@@ -76,6 +79,7 @@ impl ProxyService {
                 .headers()
                 .get(LOCATION)
                 .and_then(|value| value.to_str().ok())
+            && is_safe_soft_redirect_target(target)
         {
             return Ok(soft_redirect_response(target));
         }
@@ -155,6 +159,37 @@ fn apply_forwarded_headers(headers: &mut HeaderMap, client_ip: IpAddr, trust_inc
 
     if let Some(host) = headers.get(HOST).cloned() {
         headers.insert("x-forwarded-host", host);
+    }
+}
+
+fn strip_gateway_session_cookie(headers: &mut HeaderMap) {
+    let retained = headers
+        .get_all(COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|raw| raw.split(';'))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .filter(|part| {
+            !part
+                .split_once('=')
+                .map(|(name, _)| {
+                    name.trim()
+                        .eq_ignore_ascii_case(GATEWAY_SESSION_COOKIE_NAME)
+                })
+                .unwrap_or(false)
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    headers.remove(COOKIE);
+
+    if retained.is_empty() {
+        return;
+    }
+
+    if let Ok(value) = HeaderValue::from_str(&retained.join("; ")) {
+        headers.insert(COOKIE, value);
     }
 }
 
@@ -285,6 +320,18 @@ fn is_document_navigation(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+fn is_safe_soft_redirect_target(target: &str) -> bool {
+    if target.starts_with('/') && !target.starts_with("//") {
+        return true;
+    }
+
+    let Ok(uri) = target.parse::<Uri>() else {
+        return false;
+    };
+
+    matches!(uri.scheme_str(), Some("http" | "https"))
+}
+
 fn soft_redirect_response(target: &str) -> Response<Body> {
     let escaped_target = escape_js_string(target);
     let body = format!(
@@ -361,7 +408,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use axum::body::Body;
-    use axum::http::header::{ACCEPT, CONNECTION, HOST, UPGRADE, USER_AGENT};
+    use axum::http::header::{ACCEPT, CONNECTION, COOKIE, HOST, UPGRADE, USER_AGENT};
     use axum::http::{HeaderMap, HeaderValue, Request, Uri};
     use hyper_util::client::legacy::Client;
     use hyper_util::client::legacy::connect::HttpConnector;
@@ -373,8 +420,10 @@ mod tests {
     use super::apply_forwarded_headers;
     use super::bridge_upgrade_streams;
     use super::build_upstream_uri;
+    use super::is_safe_soft_redirect_target;
     use super::rewrite_upstream_redirect_target;
     use super::should_use_soft_redirect;
+    use super::strip_gateway_session_cookie;
     use super::strip_hop_by_hop_headers;
 
     fn build_config_with_host(host: &str) -> Config {
@@ -582,5 +631,30 @@ mod tests {
 
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
         assert!(!should_use_soft_redirect(&headers));
+    }
+
+    #[test]
+    fn strip_gateway_session_cookie_removes_only_gateway_cookie() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            HeaderValue::from_static("wol_session=secret; upstream_pref=abc; theme=dark"),
+        );
+
+        strip_gateway_session_cookie(&mut headers);
+
+        assert_eq!(
+            headers.get(COOKIE).and_then(|v| v.to_str().ok()),
+            Some("upstream_pref=abc; theme=dark")
+        );
+    }
+
+    #[test]
+    fn safe_soft_redirect_target_allows_relative_and_http_only() {
+        assert!(is_safe_soft_redirect_target("/demo?x=1"));
+        assert!(is_safe_soft_redirect_target("https://example.test/path"));
+        assert!(!is_safe_soft_redirect_target("//example.test/path"));
+        assert!(!is_safe_soft_redirect_target("javascript:alert(1)"));
+        assert!(!is_safe_soft_redirect_target("data:text/html,evil"));
     }
 }

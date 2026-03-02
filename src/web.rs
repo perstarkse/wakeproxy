@@ -5,7 +5,8 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Form, Query, Request, State};
 use axum::http::header::{
-    ACCEPT, CACHE_CONTROL, EXPIRES, PRAGMA, RETRY_AFTER, SET_COOKIE, USER_AGENT,
+    ACCEPT, CACHE_CONTROL, EXPIRES, HOST, ORIGIN, PRAGMA, REFERER, RETRY_AFTER, SET_COOKIE,
+    USER_AGENT,
 };
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
@@ -312,6 +313,11 @@ pub async fn login_submit(
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> axum::response::Response {
+    if !is_same_origin_request(&headers) {
+        warn!("rejected cross-origin login submission");
+        return csrf_forbidden_response();
+    }
+
     let client_ip = extract_client_ip(&state.config, &headers, addr);
     let next = sanitize_next(form.next.as_deref());
 
@@ -347,6 +353,11 @@ pub async fn logout_submit(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
+    if !is_same_origin_request(&headers) {
+        warn!("rejected cross-origin logout submission");
+        return csrf_forbidden_response();
+    }
+
     state.auth.logout_from_headers(&headers).await;
 
     let mut response = redirect_response("/_auth/login", Some(&headers));
@@ -446,6 +457,11 @@ pub async fn wake_start_submit(
     headers: HeaderMap,
     Form(form): Form<WakeStartForm>,
 ) -> axum::response::Response {
+    if !is_same_origin_request(&headers) {
+        warn!("rejected cross-origin wake-start submission");
+        return csrf_forbidden_response();
+    }
+
     let next = sanitize_next(form.next.as_deref()).unwrap_or_else(|| "/".to_string());
 
     if let WakeStartResult::AlreadyReady { .. } = state.wake.start_wake().await {
@@ -739,20 +755,109 @@ fn extract_client_ip(config: &Config, headers: &HeaderMap, connect_info: SocketA
         return connect_info.ip();
     }
 
-    if let Some(forwarded_for) = headers
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-        && let Some(first) = forwarded_for.split(',').next()
-        && let Ok(parsed) = first.trim().parse::<IpAddr>()
-    {
-        return parsed;
+    let peer_ip = connect_info.ip();
+    let mut chain = forwarded_for_chain(headers);
+    chain.push(peer_ip);
+
+    for ip in chain.into_iter().rev() {
+        if !config.trusted_proxy_ips.contains(&ip) {
+            return ip;
+        }
     }
 
-    connect_info.ip()
+    peer_ip
 }
 
 fn should_trust_proxy(config: &Config, connect_info: SocketAddr) -> bool {
     config.trust_proxy_headers && config.trusted_proxy_ips.contains(&connect_info.ip())
+}
+
+fn forwarded_for_chain(headers: &HeaderMap) -> Vec<IpAddr> {
+    headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .filter_map(|part| part.trim().parse::<IpAddr>().ok())
+        .collect()
+}
+
+fn csrf_forbidden_response() -> axum::response::Response {
+    let mut response = (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    mark_uncacheable(response.headers_mut());
+    response
+}
+
+fn is_same_origin_request(headers: &HeaderMap) -> bool {
+    if let Some(site) = headers
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_ascii_lowercase())
+        && site == "cross-site"
+    {
+        return false;
+    }
+
+    if headers.get(ORIGIN).is_none() && headers.get(REFERER).is_none() {
+        return true;
+    }
+
+    let Some(host) = headers.get(HOST).and_then(|value| value.to_str().ok()) else {
+        return false;
+    };
+    let Some((host_name, host_port)) = parse_host_authority(host) else {
+        return false;
+    };
+
+    if let Some(origin) = headers.get(ORIGIN).and_then(|value| value.to_str().ok()) {
+        return matches_authority(origin, &host_name, host_port);
+    }
+
+    if let Some(referer) = headers.get(REFERER).and_then(|value| value.to_str().ok()) {
+        return matches_authority(referer, &host_name, host_port);
+    }
+
+    false
+}
+
+fn parse_host_authority(value: &str) -> Option<(String, Option<u16>)> {
+    let authority = value.parse::<axum::http::uri::Authority>().ok()?;
+    Some((
+        authority
+            .host()
+            .trim_matches(&['[', ']'][..])
+            .to_ascii_lowercase(),
+        authority.port_u16(),
+    ))
+}
+
+fn matches_authority(value: &str, host_name: &str, host_port: Option<u16>) -> bool {
+    let uri = value.parse::<axum::http::Uri>().ok();
+    let Some(uri) = uri else {
+        return false;
+    };
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+
+    let origin_host = authority
+        .host()
+        .trim_matches(&['[', ']'][..])
+        .to_ascii_lowercase();
+    if origin_host != host_name {
+        return false;
+    }
+
+    let origin_port = authority.port_u16().or_else(|| match uri.scheme_str() {
+        Some("http") => Some(80),
+        Some("https") => Some(443),
+        _ => None,
+    });
+
+    match host_port {
+        Some(port) => origin_port == Some(port),
+        None => origin_port.is_none() || origin_port == Some(80) || origin_port == Some(443),
+    }
 }
 
 fn wake_state_label(state: WakeState) -> &'static str {
@@ -906,16 +1011,58 @@ fn escape_js_string(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::net::SocketAddr;
+
     use axum::body::to_bytes;
-    use axum::http::header::{ACCEPT, CACHE_CONTROL, CONTENT_TYPE, LOCATION, USER_AGENT};
+    use axum::http::header::{
+        ACCEPT, CACHE_CONTROL, CONTENT_TYPE, HOST, LOCATION, ORIGIN, REFERER, USER_AGENT,
+    };
     use axum::http::{HeaderMap, HeaderValue, StatusCode};
 
     use super::{
-        load_templates, mark_uncacheable, preview_auto_from_label, pwa_icon_192, redirect_response,
-        sanitize_next, service_worker, wake_retryable, wake_state_from_label, wake_state_label,
-        wake_status_message, web_manifest,
+        extract_client_ip, is_same_origin_request, load_templates, mark_uncacheable,
+        preview_auto_from_label, pwa_icon_192, redirect_response, sanitize_next, service_worker,
+        wake_retryable, wake_state_from_label, wake_state_label, wake_status_message, web_manifest,
     };
+    use crate::config::Config;
     use crate::wake::WakeState;
+
+    fn trusted_proxy_config() -> Config {
+        let mut map = HashMap::new();
+        map.insert(
+            "WOL_PROXY_UPSTREAM_HOST".to_string(),
+            "127.0.0.1".to_string(),
+        );
+        map.insert("WOL_PROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
+        map.insert(
+            "WOL_PROXY_WOL_MAC".to_string(),
+            "aa:bb:cc:dd:ee:ff".to_string(),
+        );
+        map.insert(
+            "WOL_PROXY_WOL_BROADCAST_IP".to_string(),
+            "127.255.255.255".to_string(),
+        );
+        map.insert(
+            "WOL_PROXY_PASSWORD_HASH".to_string(),
+            "$argon2id$v=19$m=19456,t=2,p=1$dGVzdHRlc3R0ZXN0dGVzdA$0xDPfypM3Y76kJumWn95v9PoW7A1WeNseyX2VINeodQ"
+                .to_string(),
+        );
+        map.insert(
+            "WOL_PROXY_SESSION_SECRET".to_string(),
+            "integration-test-secret".to_string(),
+        );
+        map.insert(
+            "WOL_PROXY_TRUST_PROXY_HEADERS".to_string(),
+            "true".to_string(),
+        );
+        map.insert(
+            "WOL_PROXY_TRUSTED_PROXY_IPS".to_string(),
+            "127.0.0.1,10.0.0.1".to_string(),
+        );
+
+        Config::from_map(&map).expect("config")
+    }
 
     #[test]
     fn wake_state_labels_and_messages_cover_all_variants() {
@@ -1154,5 +1301,46 @@ mod tests {
         assert!(script.contains("request.mode === \"navigate\""));
         assert!(script.contains("event.respondWith(fetch(request));"));
         assert!(script.contains("/manifest.webmanifest"));
+    }
+
+    #[test]
+    fn same_origin_request_accepts_matching_origin_and_rejects_cross_site() {
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("gateway.local"));
+        headers.insert(ORIGIN, HeaderValue::from_static("https://gateway.local"));
+        assert!(is_same_origin_request(&headers));
+
+        headers.insert(ORIGIN, HeaderValue::from_static("https://evil.example"));
+        assert!(!is_same_origin_request(&headers));
+
+        let mut sec_fetch = HeaderMap::new();
+        sec_fetch.insert(HOST, HeaderValue::from_static("gateway.local"));
+        sec_fetch.insert("sec-fetch-site", HeaderValue::from_static("cross-site"));
+        assert!(!is_same_origin_request(&sec_fetch));
+
+        let mut legacy = HeaderMap::new();
+        legacy.insert(HOST, HeaderValue::from_static("gateway.local"));
+        legacy.insert(
+            REFERER,
+            HeaderValue::from_static("https://gateway.local/login"),
+        );
+        assert!(is_same_origin_request(&legacy));
+    }
+
+    #[test]
+    fn extract_client_ip_uses_last_untrusted_hop_from_forwarded_chain() {
+        let config = trusted_proxy_config();
+        let connect: SocketAddr = "127.0.0.1:12345".parse().expect("socket addr");
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("203.0.113.7, 10.0.0.1"),
+        );
+
+        assert_eq!(
+            extract_client_ip(&config, &headers, connect),
+            "203.0.113.7".parse::<std::net::IpAddr>().expect("ip")
+        );
     }
 }
