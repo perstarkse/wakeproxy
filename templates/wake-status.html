@@ -174,6 +174,72 @@
     font-weight: 600;
   }
 
+  .progress-label-short {
+    display: none;
+  }
+
+  @media (max-width: 540px) {
+    [data-wake-root] {
+      gap: 0.75rem;
+    }
+
+    .status-head {
+      align-items: center;
+      justify-content: flex-start;
+      gap: 0.55rem;
+      flex-wrap: nowrap;
+    }
+
+    .status-head h1 {
+      font-size: 1.32rem;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .live-chip {
+      flex: 0 0 auto;
+      gap: 0.38rem;
+      font-size: 0.78rem;
+      padding: 0.25rem 0.5rem;
+    }
+
+    .status-grid {
+      gap: 0.4rem;
+    }
+
+    .status-kv {
+      padding: 0.48rem 0.58rem;
+    }
+
+    .progress-track {
+      gap: 0.38rem;
+    }
+
+    .progress-item {
+      gap: 0.44rem;
+      padding: 0.42rem 0.55rem;
+      font-size: 0.86rem;
+    }
+
+    .progress-label-long {
+      display: none;
+    }
+
+    .progress-label-short {
+      display: inline;
+    }
+
+    .actions {
+      display: grid;
+      gap: 0.5rem;
+    }
+
+    .actions button,
+    .actions .button-link {
+      width: 100%;
+    }
+  }
+
   @keyframes ping {
     0% { box-shadow: 0 0 0 0 rgba(57, 117, 78, 0.32); }
     80% { box-shadow: 0 0 0 0.46rem rgba(57, 117, 78, 0); }
@@ -501,39 +567,54 @@
   </p>
   {% endif %}
 
-  <p class="muted">Destination: <code>{{ next }}</code></p>
-
   <div class="status-grid">
     <div class="status-kv">
       <p class="muted">Current state</p>
       <p><span class="status-badge" data-state-label>{{ state }}</span></p>
     </div>
+    {% if preview_mode %}
     <div class="status-kv">
       <p class="muted">Wake cycle</p>
       <p><strong data-cycle>{% if cycle_known %}{{ cycle_id }}{% else %}-{% endif %}</strong></p>
     </div>
+    {% endif %}
   </div>
 
   <ol class="progress-track" aria-label="Wake progress">
     <li class="progress-item" data-progress-step="sleeping" data-progress="upcoming">
       <span class="progress-dot" aria-hidden="true"></span>
-      <span>System sleeping</span>
+      <span>
+        <span class="progress-label-long">System sleeping</span>
+        <span class="progress-label-short">Sleeping</span>
+      </span>
     </li>
     <li class="progress-item" data-progress-step="waking" data-progress="upcoming">
       <span class="progress-dot" aria-hidden="true"></span>
-      <span>Sending wake signal</span>
+      <span>
+        <span class="progress-label-long">Sending wake signal</span>
+        <span class="progress-label-short">Waking</span>
+      </span>
     </li>
     <li class="progress-item" data-progress-step="ping_ready" data-progress="upcoming">
       <span class="progress-dot" aria-hidden="true"></span>
-      <span>Host reachable</span>
+      <span>
+        <span class="progress-label-long">Host reachable</span>
+        <span class="progress-label-short">Reachable</span>
+      </span>
     </li>
     <li class="progress-item" data-progress-step="http_ready" data-progress="upcoming">
       <span class="progress-dot" aria-hidden="true"></span>
-      <span>Service checks passing</span>
+      <span>
+        <span class="progress-label-long">Service checks passing</span>
+        <span class="progress-label-short">Checks ok</span>
+      </span>
     </li>
     <li class="progress-item" data-progress-step="ready" data-progress="upcoming">
       <span class="progress-dot" aria-hidden="true"></span>
-      <span>Ready to connect</span>
+      <span>
+        <span class="progress-label-long">Ready to connect</span>
+        <span class="progress-label-short">Ready</span>
+      </span>
     </li>
   </ol>
 
