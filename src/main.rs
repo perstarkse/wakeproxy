@@ -5,7 +5,7 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use thiserror::Error;
 use tokio::net::TcpListener;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use wol_web_proxy::config::Config;
 use wol_web_proxy::readiness::SystemReadinessProbe;
@@ -71,6 +71,7 @@ async fn main() -> Result<(), StartupError> {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await
     .map_err(StartupError::Serve)?;
 
@@ -86,4 +87,29 @@ fn init_tracing() {
         .with_thread_ids(true)
         .json()
         .init();
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install ctrl+c handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
+        signal.recv().await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => info!("received SIGINT, starting graceful shutdown"),
+        _ = terminate => info!("received SIGTERM, starting graceful shutdown"),
+    }
+
+    warn!("stopping server");
 }

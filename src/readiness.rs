@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use reqwest::Client;
 use thiserror::Error;
+use tokio::net::TcpStream;
 use tokio::process::Command;
+use tokio::time::{Duration, timeout};
 
 use crate::config::Config;
 
@@ -20,14 +22,17 @@ pub trait ReadinessProbe: Send + Sync {
 #[derive(Clone)]
 pub struct SystemReadinessProbe {
     host: String,
+    upstream_port: u16,
     health_url: String,
     client: Client,
     ping_command: String,
+    reachability_timeout: Duration,
 }
 
 impl SystemReadinessProbe {
     pub fn new(config: &Config) -> Result<Self, ReadinessError> {
         let health_url = format!("{}{}", config.upstream_base_url(), config.health_path);
+        let reachability_timeout = Duration::from_secs(1).min(config.poll_interval);
 
         let client = Client::builder()
             .timeout(config.poll_interval)
@@ -36,32 +41,34 @@ impl SystemReadinessProbe {
 
         Ok(Self {
             host: config.upstream_host.clone(),
+            upstream_port: config.upstream_port,
             health_url,
             client,
             ping_command: "ping".to_string(),
+            reachability_timeout,
         })
     }
 
     #[cfg(test)]
     fn with_ping_command(
         host: String,
+        upstream_port: u16,
         health_url: String,
-        timeout: std::time::Duration,
+        timeout: Duration,
         ping_command: String,
     ) -> Self {
         let client = Client::builder().timeout(timeout).build().expect("client");
         Self {
             host,
+            upstream_port,
             health_url,
             client,
             ping_command,
+            reachability_timeout: timeout,
         }
     }
-}
 
-#[async_trait]
-impl ReadinessProbe for SystemReadinessProbe {
-    async fn ping(&self) -> bool {
+    async fn command_ping(&self) -> bool {
         match Command::new(&self.ping_command)
             .arg("-c")
             .arg("1")
@@ -74,6 +81,28 @@ impl ReadinessProbe for SystemReadinessProbe {
             Ok(output) => output.status.success(),
             Err(_) => false,
         }
+    }
+
+    async fn tcp_reachable(&self) -> bool {
+        matches!(
+            timeout(
+                self.reachability_timeout,
+                TcpStream::connect((self.host.as_str(), self.upstream_port)),
+            )
+            .await,
+            Ok(Ok(_))
+        )
+    }
+}
+
+#[async_trait]
+impl ReadinessProbe for SystemReadinessProbe {
+    async fn ping(&self) -> bool {
+        if self.command_ping().await {
+            return true;
+        }
+
+        self.tcp_reachable().await
     }
 
     async fn health(&self) -> bool {
@@ -142,6 +171,7 @@ mod tests {
 
         let probe = SystemReadinessProbe::with_ping_command(
             "127.0.0.1".to_string(),
+            addr.port(),
             format!("http://{addr}/health"),
             Duration::from_secs(1),
             "ping".to_string(),
@@ -155,6 +185,7 @@ mod tests {
     async fn health_returns_false_on_connection_error() {
         let probe = SystemReadinessProbe::with_ping_command(
             "127.0.0.1".to_string(),
+            1,
             "http://127.0.0.1:1/health".to_string(),
             Duration::from_millis(200),
             "ping".to_string(),
@@ -163,10 +194,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ping_returns_false_when_command_is_missing() {
-        // Custom command allows deterministic coverage of command-spawn failures.
+    async fn ping_falls_back_to_tcp_connect_when_command_is_missing() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
         let probe = SystemReadinessProbe::with_ping_command(
             "127.0.0.1".to_string(),
+            addr.port(),
+            "http://127.0.0.1/health".to_string(),
+            Duration::from_millis(200),
+            "command-that-does-not-exist".to_string(),
+        );
+
+        assert!(probe.ping().await);
+    }
+
+    #[tokio::test]
+    async fn ping_returns_false_when_command_and_tcp_connect_fail() {
+        let probe = SystemReadinessProbe::with_ping_command(
+            "127.0.0.1".to_string(),
+            1,
             "http://127.0.0.1/health".to_string(),
             Duration::from_millis(200),
             "command-that-does-not-exist".to_string(),
@@ -179,6 +226,7 @@ mod tests {
     async fn ping_command_invocation_path_is_executed() {
         let probe = SystemReadinessProbe::with_ping_command(
             "127.0.0.1".to_string(),
+            1,
             "http://127.0.0.1/health".to_string(),
             Duration::from_millis(200),
             "ping".to_string(),

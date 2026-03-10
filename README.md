@@ -2,6 +2,45 @@
 
 Axum-based gateway that protects an upstream app with password login. If the upstream is asleep, authenticated users land on a wake status page and can explicitly start Wake-on-LAN; the gateway then polls readiness (`ping` + HTTP health) and redirects to the requested path when ready.
 
+## Project shape
+
+- Single shared password for a small trusted group
+- Single upstream app behind one gateway process
+- In-memory sessions and login-attempt tracking only
+- Explicit wake flow instead of background auto-wake on every unauthenticated hit
+
+This is intentionally a small-scope project. It is not trying to be a full identity system, a generic reverse proxy platform, or a multi-service control plane.
+
+## Non-goals
+
+- No database or external state store
+- No OAuth, SSO, or multi-user administration
+- No multi-upstream routing or per-app policy engine
+- No heavy frontend shell beyond the login and wake flow
+
+## Quickstart
+
+Generate a password hash using the built-in helper:
+
+```bash
+cargo run --quiet --example password-hash -- "replace-me"
+```
+
+Generate a strong session secret:
+
+```bash
+openssl rand -base64 32 | tr -d '\n'
+```
+
+Copy `.env.example` to `.env`, fill in the real values, then load it into your shell and run the gateway:
+
+```bash
+set -a
+. ./.env
+set +a
+cargo run
+```
+
 ## Required environment variables
 
 - `WOL_PROXY_UPSTREAM_HOST`
@@ -36,6 +75,18 @@ Axum-based gateway that protects an upstream app with password login. If the ups
 - CSRF protections for `POST /_auth/login`, `POST /_auth/logout`, and `POST /_wake/start` rely on same-origin `Origin`/`Referer` validation against `Host`; keep `Host` handling consistent through your proxy.
 - The gateway strips its own `wol_session` cookie before forwarding upstream requests, so upstream services do not receive gateway auth sessions.
 - iOS soft redirects only run for safe targets (relative paths or `http/https` URLs).
+- Session state is memory-backed by design; restarting the process clears active sessions and login-attempt tracking.
+- Prefer a randomly generated session secret of at least 32 bytes, even though the minimum accepted length is lower.
+
+## Readiness model
+
+- Reachability uses system `ping` when available.
+- If `ping` is unavailable or blocked, the gateway falls back to a TCP connect check against the upstream port.
+- Health is still confirmed through `GET WOL_PROXY_HEALTH_PATH` and requires a `2xx` response before proxy traffic is released.
+
+## Development-only routes
+
+- `/_dev/wake-preview` exists only in debug builds and returns `404` in release builds.
 
 ## Local run
 
@@ -84,3 +135,8 @@ Optional overrides:
 ```bash
 UPSTREAM_PORT=6994 GATEWAY_PORT=18080 PASSWORD=my-test-password ./scripts/e2e-local.sh
 ```
+
+## Open-source readiness
+
+- See `CONTRIBUTING.md` for local workflow and scope expectations.
+- See `SECURITY.md` for reporting guidance.
