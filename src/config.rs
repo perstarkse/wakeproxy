@@ -46,85 +46,85 @@ impl Config {
     }
 
     pub fn from_map(map: &HashMap<String, String>) -> Result<Self, ConfigError> {
-        let upstream_host = required(map, "WOL_PROXY_UPSTREAM_HOST")?;
-        let upstream_port = parse_required::<u16>(map, "WOL_PROXY_UPSTREAM_PORT")?;
-        let health_path = optional(map, "WOL_PROXY_HEALTH_PATH", "/health".to_string());
+        let upstream_host = required(map, "WAKEPROXY_UPSTREAM_HOST")?;
+        let upstream_port = parse_required::<u16>(map, "WAKEPROXY_UPSTREAM_PORT")?;
+        let health_path = optional(map, "WAKEPROXY_HEALTH_PATH", "/health".to_string());
 
         if !health_path.starts_with('/') {
             return Err(ConfigError::InvalidValue {
-                name: "WOL_PROXY_HEALTH_PATH",
+                name: "WAKEPROXY_HEALTH_PATH",
                 value: health_path,
             });
         }
 
-        let wol_mac_raw = required(map, "WOL_PROXY_WOL_MAC")?;
+        let wol_mac_raw = required(map, "WAKEPROXY_WOL_MAC")?;
         let wol_mac = parse_mac(&wol_mac_raw)?;
 
-        let wol_broadcast_ip = parse_required::<Ipv4Addr>(map, "WOL_PROXY_WOL_BROADCAST_IP")?;
-        let wol_broadcast_port = parse_optional::<u16>(map, "WOL_PROXY_WOL_BROADCAST_PORT", 9)?;
+        let wol_broadcast_ip = parse_required::<Ipv4Addr>(map, "WAKEPROXY_WOL_BROADCAST_IP")?;
+        let wol_broadcast_port = parse_optional::<u16>(map, "WAKEPROXY_WOL_BROADCAST_PORT", 9)?;
 
         let wake_timeout =
-            Duration::from_secs(parse_optional::<u64>(map, "WOL_PROXY_WAKE_TIMEOUT", 180)?);
+            Duration::from_secs(parse_optional::<u64>(map, "WAKEPROXY_WAKE_TIMEOUT", 180)?);
         let poll_interval =
-            Duration::from_secs(parse_optional::<u64>(map, "WOL_PROXY_POLL_INTERVAL", 2)?);
+            Duration::from_secs(parse_optional::<u64>(map, "WAKEPROXY_POLL_INTERVAL", 2)?);
 
         if wake_timeout.is_zero() || poll_interval.is_zero() || poll_interval > wake_timeout {
             return Err(ConfigError::InvalidValue {
-                name: "WOL_PROXY_WAKE_TIMEOUT / WOL_PROXY_POLL_INTERVAL",
+                name: "WAKEPROXY_WAKE_TIMEOUT / WAKEPROXY_POLL_INTERVAL",
                 value: format!("wake_timeout={wake_timeout:?}, poll_interval={poll_interval:?}"),
             });
         }
 
-        let bind_addr_raw = optional(map, "WOL_PROXY_BIND_ADDR", "127.0.0.1:8080".to_string());
+        let bind_addr_raw = optional(map, "WAKEPROXY_BIND_ADDR", "127.0.0.1:8080".to_string());
         let bind_addr =
             bind_addr_raw
                 .parse::<SocketAddr>()
                 .map_err(|_| ConfigError::InvalidValue {
-                    name: "WOL_PROXY_BIND_ADDR",
+                    name: "WAKEPROXY_BIND_ADDR",
                     value: bind_addr_raw,
                 })?;
 
-        let password_hash = required(map, "WOL_PROXY_PASSWORD_HASH")?;
+        let password_hash = required(map, "WAKEPROXY_PASSWORD_HASH")?;
         if PasswordHash::new(&password_hash).is_err() {
             return Err(ConfigError::InvalidValue {
-                name: "WOL_PROXY_PASSWORD_HASH",
+                name: "WAKEPROXY_PASSWORD_HASH",
                 value: "value must be a valid argon2 hash".to_string(),
             });
         }
 
-        let session_secret = required(map, "WOL_PROXY_SESSION_SECRET")?;
+        let session_secret = required(map, "WAKEPROXY_SESSION_SECRET")?;
 
         if session_secret.len() < 16 {
             return Err(ConfigError::InvalidValue {
-                name: "WOL_PROXY_SESSION_SECRET",
+                name: "WAKEPROXY_SESSION_SECRET",
                 value: "value must be at least 16 characters".to_string(),
             });
         }
 
         let ready_cache_ttl =
-            Duration::from_secs(parse_optional::<u64>(map, "WOL_PROXY_READY_CACHE_TTL", 5)?);
-        let session_ttl = parse_optional_secs(map, "WOL_PROXY_SESSION_TTL_SECS", 43_200)?;
-        let cookie_secure = parse_optional::<bool>(map, "WOL_PROXY_COOKIE_SECURE", true)?;
-        let login_max_failures = parse_optional::<usize>(map, "WOL_PROXY_LOGIN_MAX_FAILURES", 5)?;
-        let login_lockout = parse_optional_secs(map, "WOL_PROXY_LOGIN_LOCKOUT_SECS", 60)?;
+            Duration::from_secs(parse_optional::<u64>(map, "WAKEPROXY_READY_CACHE_TTL", 5)?);
+        let session_ttl = parse_optional_secs(map, "WAKEPROXY_SESSION_TTL_SECS", 43_200)?;
+        let cookie_secure = parse_optional::<bool>(map, "WAKEPROXY_COOKIE_SECURE", true)?;
+        let login_max_failures = parse_optional::<usize>(map, "WAKEPROXY_LOGIN_MAX_FAILURES", 5)?;
+        let login_lockout = parse_optional_secs(map, "WAKEPROXY_LOGIN_LOCKOUT_SECS", 60)?;
         let login_window = Duration::from_secs(parse_optional::<u64>(
             map,
-            "WOL_PROXY_LOGIN_WINDOW_SECS",
+            "WAKEPROXY_LOGIN_WINDOW_SECS",
             300,
         )?);
         let wake_poll_interval_ms =
-            parse_optional::<u64>(map, "WOL_PROXY_WAKE_POLL_INTERVAL_MS", 2000)?;
+            parse_optional::<u64>(map, "WAKEPROXY_WAKE_POLL_INTERVAL_MS", 2000)?;
         if wake_poll_interval_ms == 0 {
             return Err(ConfigError::InvalidValue {
-                name: "WOL_PROXY_WAKE_POLL_INTERVAL_MS",
+                name: "WAKEPROXY_WAKE_POLL_INTERVAL_MS",
                 value: "value must be greater than zero".to_string(),
             });
         }
         let trust_proxy_headers =
-            parse_optional::<bool>(map, "WOL_PROXY_TRUST_PROXY_HEADERS", false)?;
-        let trusted_proxy_ips = parse_ip_list(map, "WOL_PROXY_TRUSTED_PROXY_IPS")?;
+            parse_optional::<bool>(map, "WAKEPROXY_TRUST_PROXY_HEADERS", false)?;
+        let trusted_proxy_ips = parse_ip_list(map, "WAKEPROXY_TRUSTED_PROXY_IPS")?;
         let login_max_tracked_ips =
-            parse_optional::<usize>(map, "WOL_PROXY_LOGIN_MAX_TRACKED_IPS", 10_000)?;
+            parse_optional::<usize>(map, "WAKEPROXY_LOGIN_MAX_TRACKED_IPS", 10_000)?;
 
         Ok(Self {
             upstream_host,
@@ -220,7 +220,7 @@ fn parse_mac(raw: &str) -> Result<[u8; 6], ConfigError> {
     let parts = raw.split(':').collect::<Vec<_>>();
     if parts.len() != 6 {
         return Err(ConfigError::InvalidValue {
-            name: "WOL_PROXY_WOL_MAC",
+            name: "WAKEPROXY_WOL_MAC",
             value: raw.to_string(),
         });
     }
@@ -228,7 +228,7 @@ fn parse_mac(raw: &str) -> Result<[u8; 6], ConfigError> {
     let mut out = [0_u8; 6];
     for (idx, part) in parts.iter().enumerate() {
         out[idx] = u8::from_str_radix(part, 16).map_err(|_| ConfigError::InvalidValue {
-            name: "WOL_PROXY_WOL_MAC",
+            name: "WAKEPROXY_WOL_MAC",
             value: raw.to_string(),
         })?;
     }
@@ -279,25 +279,25 @@ mod tests {
     fn valid_env() -> HashMap<String, String> {
         let mut map = HashMap::new();
         map.insert(
-            "WOL_PROXY_UPSTREAM_HOST".to_string(),
+            "WAKEPROXY_UPSTREAM_HOST".to_string(),
             "charon.lan".to_string(),
         );
-        map.insert("WOL_PROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
+        map.insert("WAKEPROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
         map.insert(
-            "WOL_PROXY_WOL_MAC".to_string(),
+            "WAKEPROXY_WOL_MAC".to_string(),
             "aa:bb:cc:dd:ee:ff".to_string(),
         );
         map.insert(
-            "WOL_PROXY_WOL_BROADCAST_IP".to_string(),
+            "WAKEPROXY_WOL_BROADCAST_IP".to_string(),
             "10.0.0.255".to_string(),
         );
         map.insert(
-            "WOL_PROXY_PASSWORD_HASH".to_string(),
+            "WAKEPROXY_PASSWORD_HASH".to_string(),
             "$argon2id$v=19$m=19456,t=2,p=1$dGVzdHRlc3R0ZXN0dGVzdA$0xDPfypM3Y76kJumWn95v9PoW7A1WeNseyX2VINeodQ"
                 .to_string(),
         );
         map.insert(
-            "WOL_PROXY_SESSION_SECRET".to_string(),
+            "WAKEPROXY_SESSION_SECRET".to_string(),
             "very-secret-session-key".to_string(),
         );
         map
@@ -315,21 +315,21 @@ mod tests {
     #[test]
     fn config_fails_on_missing_required() {
         let mut env = valid_env();
-        env.remove("WOL_PROXY_PASSWORD_HASH");
+        env.remove("WAKEPROXY_PASSWORD_HASH");
         assert!(Config::from_map(&env).is_err());
     }
 
     #[test]
     fn config_fails_on_bad_mac() {
         let mut env = valid_env();
-        env.insert("WOL_PROXY_WOL_MAC".to_string(), "not-a-mac".to_string());
+        env.insert("WAKEPROXY_WOL_MAC".to_string(), "not-a-mac".to_string());
         assert!(Config::from_map(&env).is_err());
     }
 
     #[test]
     fn config_formats_ipv6_base_url() {
         let mut env = valid_env();
-        env.insert("WOL_PROXY_UPSTREAM_HOST".to_string(), "fd00::1".to_string());
+        env.insert("WAKEPROXY_UPSTREAM_HOST".to_string(), "fd00::1".to_string());
         let config = Config::from_map(&env).expect("valid config");
         assert_eq!(config.upstream_base_url(), "http://[fd00::1]:3000");
     }
@@ -354,11 +354,11 @@ mod tests {
     #[test]
     fn config_fails_on_invalid_health_path() {
         let mut env = valid_env();
-        env.insert("WOL_PROXY_HEALTH_PATH".to_string(), "health".to_string());
+        env.insert("WAKEPROXY_HEALTH_PATH".to_string(), "health".to_string());
         assert!(matches!(
             Config::from_map(&env),
             Err(ConfigError::InvalidValue {
-                name: "WOL_PROXY_HEALTH_PATH",
+                name: "WAKEPROXY_HEALTH_PATH",
                 ..
             })
         ));
@@ -367,19 +367,19 @@ mod tests {
     #[test]
     fn config_fails_on_invalid_timeout_relationship() {
         let mut env = valid_env();
-        env.insert("WOL_PROXY_WAKE_TIMEOUT".to_string(), "1".to_string());
-        env.insert("WOL_PROXY_POLL_INTERVAL".to_string(), "2".to_string());
+        env.insert("WAKEPROXY_WAKE_TIMEOUT".to_string(), "1".to_string());
+        env.insert("WAKEPROXY_POLL_INTERVAL".to_string(), "2".to_string());
         assert!(Config::from_map(&env).is_err());
     }
 
     #[test]
     fn config_fails_on_invalid_bind_addr() {
         let mut env = valid_env();
-        env.insert("WOL_PROXY_BIND_ADDR".to_string(), "not-an-addr".to_string());
+        env.insert("WAKEPROXY_BIND_ADDR".to_string(), "not-an-addr".to_string());
         assert!(matches!(
             Config::from_map(&env),
             Err(ConfigError::InvalidValue {
-                name: "WOL_PROXY_BIND_ADDR",
+                name: "WAKEPROXY_BIND_ADDR",
                 ..
             })
         ));
@@ -388,11 +388,11 @@ mod tests {
     #[test]
     fn config_fails_on_short_session_secret() {
         let mut env = valid_env();
-        env.insert("WOL_PROXY_SESSION_SECRET".to_string(), "short".to_string());
+        env.insert("WAKEPROXY_SESSION_SECRET".to_string(), "short".to_string());
         assert!(matches!(
             Config::from_map(&env),
             Err(ConfigError::InvalidValue {
-                name: "WOL_PROXY_SESSION_SECRET",
+                name: "WAKEPROXY_SESSION_SECRET",
                 ..
             })
         ));
@@ -401,11 +401,11 @@ mod tests {
     #[test]
     fn config_fails_on_invalid_required_parse() {
         let mut env = valid_env();
-        env.insert("WOL_PROXY_UPSTREAM_PORT".to_string(), "nope".to_string());
+        env.insert("WAKEPROXY_UPSTREAM_PORT".to_string(), "nope".to_string());
         assert!(matches!(
             Config::from_map(&env),
             Err(ConfigError::InvalidValue {
-                name: "WOL_PROXY_UPSTREAM_PORT",
+                name: "WAKEPROXY_UPSTREAM_PORT",
                 ..
             })
         ));
@@ -415,13 +415,13 @@ mod tests {
     fn config_fails_on_invalid_optional_parse() {
         let mut env = valid_env();
         env.insert(
-            "WOL_PROXY_LOGIN_WINDOW_SECS".to_string(),
+            "WAKEPROXY_LOGIN_WINDOW_SECS".to_string(),
             "invalid".to_string(),
         );
         assert!(matches!(
             Config::from_map(&env),
             Err(ConfigError::InvalidValue {
-                name: "WOL_PROXY_LOGIN_WINDOW_SECS",
+                name: "WAKEPROXY_LOGIN_WINDOW_SECS",
                 ..
             })
         ));
@@ -431,7 +431,7 @@ mod tests {
     fn config_fails_on_invalid_mac_segment() {
         let mut env = valid_env();
         env.insert(
-            "WOL_PROXY_WOL_MAC".to_string(),
+            "WAKEPROXY_WOL_MAC".to_string(),
             "aa:bb:cc:dd:ee:gg".to_string(),
         );
         assert!(Config::from_map(&env).is_err());
@@ -441,7 +441,7 @@ mod tests {
     fn config_parses_trusted_proxy_ips_list() {
         let mut env = valid_env();
         env.insert(
-            "WOL_PROXY_TRUSTED_PROXY_IPS".to_string(),
+            "WAKEPROXY_TRUSTED_PROXY_IPS".to_string(),
             "127.0.0.1, ::1, ,10.0.0.1".to_string(),
         );
         let config = Config::from_map(&env).expect("config");
@@ -452,13 +452,13 @@ mod tests {
     fn config_fails_on_invalid_trusted_proxy_ip() {
         let mut env = valid_env();
         env.insert(
-            "WOL_PROXY_TRUSTED_PROXY_IPS".to_string(),
+            "WAKEPROXY_TRUSTED_PROXY_IPS".to_string(),
             "127.0.0.1,not-an-ip".to_string(),
         );
         assert!(matches!(
             Config::from_map(&env),
             Err(ConfigError::InvalidValue {
-                name: "WOL_PROXY_TRUSTED_PROXY_IPS",
+                name: "WAKEPROXY_TRUSTED_PROXY_IPS",
                 ..
             })
         ));
@@ -467,10 +467,10 @@ mod tests {
     #[test]
     fn config_parses_optional_overrides() {
         let mut env = valid_env();
-        env.insert("WOL_PROXY_SESSION_TTL_SECS".to_string(), "120".to_string());
-        env.insert("WOL_PROXY_LOGIN_LOCKOUT_SECS".to_string(), "9".to_string());
+        env.insert("WAKEPROXY_SESSION_TTL_SECS".to_string(), "120".to_string());
+        env.insert("WAKEPROXY_LOGIN_LOCKOUT_SECS".to_string(), "9".to_string());
         env.insert(
-            "WOL_PROXY_WAKE_POLL_INTERVAL_MS".to_string(),
+            "WAKEPROXY_WAKE_POLL_INTERVAL_MS".to_string(),
             "1500".to_string(),
         );
 
@@ -484,13 +484,13 @@ mod tests {
     fn config_fails_on_zero_wake_poll_interval_ms() {
         let mut env = valid_env();
         env.insert(
-            "WOL_PROXY_WAKE_POLL_INTERVAL_MS".to_string(),
+            "WAKEPROXY_WAKE_POLL_INTERVAL_MS".to_string(),
             "0".to_string(),
         );
         assert!(matches!(
             Config::from_map(&env),
             Err(ConfigError::InvalidValue {
-                name: "WOL_PROXY_WAKE_POLL_INTERVAL_MS",
+                name: "WAKEPROXY_WAKE_POLL_INTERVAL_MS",
                 ..
             })
         ));

@@ -1,4 +1,4 @@
-# wol-web-proxy
+# wakeproxy
 
 Axum-based gateway that protects an upstream app with password login. If the upstream is asleep, authenticated users land on a wake status page and can explicitly start Wake-on-LAN; the gateway then polls readiness (`ping` + HTTP health) and redirects to the requested path when ready.
 
@@ -43,37 +43,37 @@ cargo run
 
 ## Required environment variables
 
-- `WOL_PROXY_UPSTREAM_HOST`
-- `WOL_PROXY_UPSTREAM_PORT`
-- `WOL_PROXY_WOL_MAC` (format: `aa:bb:cc:dd:ee:ff`)
-- `WOL_PROXY_WOL_BROADCAST_IP`
-- `WOL_PROXY_PASSWORD_HASH` (argon2 hash)
-- `WOL_PROXY_SESSION_SECRET`
+- `WAKEPROXY_UPSTREAM_HOST`
+- `WAKEPROXY_UPSTREAM_PORT`
+- `WAKEPROXY_WOL_MAC` (format: `aa:bb:cc:dd:ee:ff`)
+- `WAKEPROXY_WOL_BROADCAST_IP`
+- `WAKEPROXY_PASSWORD_HASH` (argon2 hash)
+- `WAKEPROXY_SESSION_SECRET`
 
 ## Optional environment variables
 
-- `WOL_PROXY_HEALTH_PATH` (default: `/health`)
-- `WOL_PROXY_WOL_BROADCAST_PORT` (default: `9`)
-- `WOL_PROXY_WAKE_TIMEOUT` (default: `180` seconds)
-- `WOL_PROXY_POLL_INTERVAL` (default: `2` seconds)
-- `WOL_PROXY_BIND_ADDR` (default: `127.0.0.1:8080`)
-- `WOL_PROXY_READY_CACHE_TTL` (default: `5` seconds)
-- `WOL_PROXY_SESSION_TTL_SECS` (default: `43200`)
-- `WOL_PROXY_COOKIE_SECURE` (default: `true`)
-- `WOL_PROXY_LOGIN_MAX_FAILURES` (default: `5`)
-- `WOL_PROXY_LOGIN_LOCKOUT_SECS` (default: `60`)
-- `WOL_PROXY_LOGIN_WINDOW_SECS` (default: `300`)
-- `WOL_PROXY_LOGIN_MAX_TRACKED_IPS` (default: `10000`)
-- `WOL_PROXY_WAKE_POLL_INTERVAL_MS` (default: `2000`)
-- `WOL_PROXY_TRUST_PROXY_HEADERS` (default: `false`)
-- `WOL_PROXY_TRUSTED_PROXY_IPS` (default: empty, comma-separated IPs)
+- `WAKEPROXY_HEALTH_PATH` (default: `/health`)
+- `WAKEPROXY_WOL_BROADCAST_PORT` (default: `9`)
+- `WAKEPROXY_WAKE_TIMEOUT` (default: `180` seconds)
+- `WAKEPROXY_POLL_INTERVAL` (default: `2` seconds)
+- `WAKEPROXY_BIND_ADDR` (default: `127.0.0.1:8080`)
+- `WAKEPROXY_READY_CACHE_TTL` (default: `5` seconds)
+- `WAKEPROXY_SESSION_TTL_SECS` (default: `43200`)
+- `WAKEPROXY_COOKIE_SECURE` (default: `true`)
+- `WAKEPROXY_LOGIN_MAX_FAILURES` (default: `5`)
+- `WAKEPROXY_LOGIN_LOCKOUT_SECS` (default: `60`)
+- `WAKEPROXY_LOGIN_WINDOW_SECS` (default: `300`)
+- `WAKEPROXY_LOGIN_MAX_TRACKED_IPS` (default: `10000`)
+- `WAKEPROXY_WAKE_POLL_INTERVAL_MS` (default: `2000`)
+- `WAKEPROXY_TRUST_PROXY_HEADERS` (default: `false`)
+- `WAKEPROXY_TRUSTED_PROXY_IPS` (default: empty, comma-separated IPs)
 
 ## Security assumptions and hardening
 
-- Keep `WOL_PROXY_TRUST_PROXY_HEADERS=false` unless the gateway is behind a known reverse proxy.
-- If proxy header trust is enabled, set `WOL_PROXY_TRUSTED_PROXY_IPS` to only your proxy hops and ensure your edge overwrites/sanitizes incoming `X-Forwarded-*` headers from clients.
+- Keep `WAKEPROXY_TRUST_PROXY_HEADERS=false` unless the gateway is behind a known reverse proxy.
+- If proxy header trust is enabled, set `WAKEPROXY_TRUSTED_PROXY_IPS` to only your proxy hops and ensure your edge overwrites/sanitizes incoming `X-Forwarded-*` headers from clients.
 - CSRF protections for `POST /_auth/login`, `POST /_auth/logout`, and `POST /_wake/start` rely on same-origin `Origin`/`Referer` validation against `Host`; keep `Host` handling consistent through your proxy.
-- The gateway strips its own `wol_session` cookie before forwarding upstream requests, so upstream services do not receive gateway auth sessions.
+- The gateway strips its own `wakeproxy_session` cookie before forwarding upstream requests, so upstream services do not receive gateway auth sessions.
 - iOS soft redirects only run for safe targets (relative paths or `http/https` URLs).
 - Session state is memory-backed by design; restarting the process clears active sessions and login-attempt tracking.
 - Prefer a randomly generated session secret of at least 32 bytes, even though the minimum accepted length is lower.
@@ -82,7 +82,7 @@ cargo run
 
 - Reachability uses system `ping` when available.
 - If `ping` is unavailable or blocked, the gateway falls back to a TCP connect check against the upstream port.
-- Health is still confirmed through `GET WOL_PROXY_HEALTH_PATH` and requires a `2xx` response before proxy traffic is released.
+- Health is still confirmed through `GET WAKEPROXY_HEALTH_PATH` and requires a `2xx` response before proxy traffic is released.
 
 ## Development-only routes
 
@@ -136,7 +136,57 @@ Optional overrides:
 UPSTREAM_PORT=6994 GATEWAY_PORT=18080 PASSWORD=my-test-password ./scripts/e2e-local.sh
 ```
 
+## systemd deployment
+
+`examples/wakeproxy.service` is the recommended starting point for production installs.
+
+- Copy the binary to `/usr/local/bin/wakeproxy` or install it from your package manager.
+- Put runtime configuration in `/etc/wakeproxy/wakeproxy.env`.
+- Run it behind a reverse proxy that terminates TLS and sets a stable `Host` header.
+
+### Install with systemd
+
+Create the service account and config directory:
+
+```bash
+sudo useradd --system --home /var/lib/wakeproxy --shell /usr/sbin/nologin wakeproxy
+sudo mkdir -p /etc/wakeproxy /var/lib/wakeproxy
+sudo chown -R wakeproxy:wakeproxy /var/lib/wakeproxy
+```
+
+Install the binary and unit file:
+
+```bash
+sudo install -m 0755 target/release/wakeproxy /usr/local/bin/wakeproxy
+sudo install -m 0644 examples/wakeproxy.service /etc/systemd/system/wakeproxy.service
+```
+
+Create `/etc/wakeproxy/wakeproxy.env` with your real values:
+
+```bash
+WAKEPROXY_UPSTREAM_HOST=127.0.0.1
+WAKEPROXY_UPSTREAM_PORT=3000
+WAKEPROXY_HEALTH_PATH=/health
+WAKEPROXY_WOL_MAC=aa:bb:cc:dd:ee:ff
+WAKEPROXY_WOL_BROADCAST_IP=192.168.1.255
+WAKEPROXY_PASSWORD_HASH=replace-with-argon2-hash
+WAKEPROXY_SESSION_SECRET=replace-with-random-secret
+WAKEPROXY_BIND_ADDR=127.0.0.1:8080
+WAKEPROXY_COOKIE_SECURE=true
+```
+
+Enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now wakeproxy
+sudo systemctl status wakeproxy
+```
+
+If you run wakeproxy behind TLS termination, keep `WAKEPROXY_COOKIE_SECURE=true` and make sure your reverse proxy forwards the original `Host` value consistently.
+
 ## Open-source readiness
 
 - See `CONTRIBUTING.md` for local workflow and scope expectations.
 - See `SECURITY.md` for reporting guidance.
+- See `CHANGELOG.md` and `docs/releases/v0.1.0.md` for release history and the initial release notes.

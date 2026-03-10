@@ -72,7 +72,7 @@ async fn login_page_renders_html() {
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     let body = response.text().await.expect("body");
-    assert!(body.contains("Wake Proxy Login"));
+    assert!(body.contains("wakeproxy login"));
     assert!(body.contains("autocomplete=\"username\""));
     assert!(body.contains("autocomplete=\"current-password webauthn\""));
 }
@@ -98,7 +98,7 @@ async fn login_sets_persistent_session_cookie_max_age() {
         .get(SET_COOKIE)
         .and_then(|v| v.to_str().ok())
         .expect("set-cookie header");
-    assert!(set_cookie.contains("wol_session="));
+    assert!(set_cookie.contains("wakeproxy_session="));
     assert!(set_cookie.contains("Max-Age=43200"));
 }
 

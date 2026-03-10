@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-linux-amd64:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package release archive
+        run: |
+          mkdir -p dist
+          cp target/release/wakeproxy dist/
+          cp README.md LICENSE dist/
+          cp examples/wakeproxy.service dist/
+          tar -C dist -czf wakeproxy-linux-x86_64.tar.gz wakeproxy README.md LICENSE wakeproxy.service
+          sha256sum wakeproxy-linux-x86_64.tar.gz > wakeproxy-linux-x86_64.tar.gz.sha256
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            wakeproxy-linux-x86_64.tar.gz
+            wakeproxy-linux-x86_64.tar.gz.sha256
+          generate_release_notes: true

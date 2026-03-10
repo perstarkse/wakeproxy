@@ -1,5 +1,5 @@
 {
-  description = "Wake-on-LAN authenticated reverse proxy";
+  description = "wakeproxy: Wake-on-LAN authenticated reverse proxy";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -20,7 +20,7 @@
       pkgs = import nixpkgs {inherit system;};
     in {
       default = pkgs.rustPlatform.buildRustPackage {
-        pname = "wol-web-proxy";
+        pname = "wakeproxy";
         version = "0.1.0";
         src = self;
         cargoLock.lockFile = ./Cargo.lock;
@@ -28,9 +28,9 @@
         doCheck = false;
 
         meta = {
-          description = "Wake-on-LAN authenticated reverse proxy";
-          homepage = "https://github.com/perstarkse/wol-web-proxy";
-          mainProgram = "wol-web-proxy";
+          description = "wakeproxy: Wake-on-LAN authenticated reverse proxy";
+          homepage = "https://github.com/perstarkse/wakeproxy";
+          mainProgram = "wakeproxy";
           platforms = pkgs.lib.platforms.linux;
         };
       };
@@ -39,7 +39,7 @@
     apps = forAllSystems (system: {
       default = {
         type = "app";
-        program = "${self.packages.${system}.default}/bin/wol-web-proxy";
+        program = "${self.packages.${system}.default}/bin/wakeproxy";
       };
     });
   };

@@ -2,12 +2,11 @@ use std::net::IpAddr;
 
 use axum::body::Body;
 use axum::http::header::{
-    ACCEPT, CONNECTION, COOKIE, HOST, LOCATION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE,
-    TRAILER, TRANSFER_ENCODING, UPGRADE, USER_AGENT,
+    CONNECTION, COOKIE, HOST, LOCATION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE, TRAILER,
+    TRANSFER_ENCODING, UPGRADE,
 };
 use axum::http::uri::InvalidUri;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, Response, Uri};
-use hyper::StatusCode;
 use hyper::body::Incoming;
 use hyper::upgrade;
 use hyper_util::client::legacy::Client;
@@ -19,8 +18,9 @@ use tracing::warn;
 
 use crate::config::Config;
 use crate::config::format_host_for_url;
+use crate::http::{should_use_soft_redirect, soft_redirect_response};
 
-const GATEWAY_SESSION_COOKIE_NAME: &str = "wol_session";
+const GATEWAY_SESSION_COOKIE_NAME: &str = "wakeproxy_session";
 
 #[derive(Clone)]
 pub struct ProxyService {
@@ -69,7 +69,7 @@ impl ProxyService {
         let mut upstream_response: Response<Incoming> = self.client.request(req).await?;
 
         let preserve_upgrade_headers =
-            is_upgrade && upstream_response.status() == StatusCode::SWITCHING_PROTOCOLS;
+            is_upgrade && upstream_response.status() == hyper::StatusCode::SWITCHING_PROTOCOLS;
         strip_hop_by_hop_headers(upstream_response.headers_mut(), preserve_upgrade_headers);
         rewrite_upstream_redirect_location(upstream_response.headers_mut(), &self.config);
 
@@ -85,7 +85,7 @@ impl ProxyService {
         }
 
         if is_upgrade
-            && upstream_response.status() == StatusCode::SWITCHING_PROTOCOLS
+            && upstream_response.status() == hyper::StatusCode::SWITCHING_PROTOCOLS
             && let Some(on_client_upgrade) = on_client_upgrade
         {
             // Both upgraded sockets are tunneled in the background so this
@@ -285,41 +285,6 @@ fn hosts_match(left: &str, right: &str) -> bool {
         .eq_ignore_ascii_case(right.trim_matches(&['[', ']'][..]))
 }
 
-fn should_use_soft_redirect(headers: &HeaderMap) -> bool {
-    is_ios_user_agent(headers) && is_document_navigation(headers)
-}
-
-fn is_ios_user_agent(headers: &HeaderMap) -> bool {
-    let Some(user_agent) = headers
-        .get(USER_AGENT)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
-
-    let lower = user_agent.to_ascii_lowercase();
-    lower.contains("iphone")
-        || lower.contains("ipad")
-        || lower.contains("ipod")
-        || (lower.contains("macintosh") && lower.contains("mobile"))
-}
-
-fn is_document_navigation(headers: &HeaderMap) -> bool {
-    if let Some(destination) = headers
-        .get("sec-fetch-dest")
-        .and_then(|value| value.to_str().ok())
-        && destination.eq_ignore_ascii_case("document")
-    {
-        return true;
-    }
-
-    headers
-        .get(ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .map(|accept| accept.contains("text/html") || accept.contains("application/xhtml+xml"))
-        .unwrap_or(false)
-}
-
 fn is_safe_soft_redirect_target(target: &str) -> bool {
     if target.starts_with('/') && !target.starts_with("//") {
         return true;
@@ -330,51 +295,6 @@ fn is_safe_soft_redirect_target(target: &str) -> bool {
     };
 
     matches!(uri.scheme_str(), Some("http" | "https"))
-}
-
-fn soft_redirect_response(target: &str) -> Response<Body> {
-    let escaped_target = escape_js_string(target);
-    let body = format!(
-        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"mobile-web-app-capable\" content=\"yes\"><meta name=\"apple-mobile-web-app-capable\" content=\"yes\"><meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\"><meta name=\"theme-color\" content=\"#eef4ed\"><title>Redirecting</title></head><body><script>window.location.replace(\"{escaped_target}\");</script><noscript>Redirecting...</noscript></body></html>",
-    );
-
-    let mut response = Response::new(Body::from(body));
-    *response.status_mut() = StatusCode::OK;
-    response.headers_mut().insert(
-        axum::http::header::CONTENT_TYPE,
-        HeaderValue::from_static("text/html; charset=utf-8"),
-    );
-    response.headers_mut().insert(
-        axum::http::header::CACHE_CONTROL,
-        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
-    );
-    response.headers_mut().insert(
-        axum::http::header::PRAGMA,
-        HeaderValue::from_static("no-cache"),
-    );
-    response
-        .headers_mut()
-        .insert(axum::http::header::EXPIRES, HeaderValue::from_static("0"));
-    response
-}
-
-fn escape_js_string(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '\\' => escaped.push_str("\\\\"),
-            '"' => escaped.push_str("\\\""),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '<' => escaped.push_str("\\u003C"),
-            '>' => escaped.push_str("\\u003E"),
-            '&' => escaped.push_str("\\u0026"),
-            '\u{2028}' => escaped.push_str("\\u2028"),
-            '\u{2029}' => escaped.push_str("\\u2029"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
 }
 
 async fn bridge_upgrade_streams<C, U, CS, US, CE, UE>(client_upgrade: C, upstream_upgrade: U)
@@ -422,29 +342,30 @@ mod tests {
     use super::build_upstream_uri;
     use super::is_safe_soft_redirect_target;
     use super::rewrite_upstream_redirect_target;
-    use super::should_use_soft_redirect;
     use super::strip_gateway_session_cookie;
     use super::strip_hop_by_hop_headers;
 
+    use crate::http::should_use_soft_redirect;
+
     fn build_config_with_host(host: &str) -> Config {
         let mut map = HashMap::new();
-        map.insert("WOL_PROXY_UPSTREAM_HOST".to_string(), host.to_string());
-        map.insert("WOL_PROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
+        map.insert("WAKEPROXY_UPSTREAM_HOST".to_string(), host.to_string());
+        map.insert("WAKEPROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
         map.insert(
-            "WOL_PROXY_WOL_MAC".to_string(),
+            "WAKEPROXY_WOL_MAC".to_string(),
             "aa:bb:cc:dd:ee:ff".to_string(),
         );
         map.insert(
-            "WOL_PROXY_WOL_BROADCAST_IP".to_string(),
+            "WAKEPROXY_WOL_BROADCAST_IP".to_string(),
             "10.0.0.255".to_string(),
         );
         map.insert(
-            "WOL_PROXY_PASSWORD_HASH".to_string(),
+            "WAKEPROXY_PASSWORD_HASH".to_string(),
             "$argon2id$v=19$m=19456,t=2,p=1$dGVzdHRlc3R0ZXN0dGVzdA$0xDPfypM3Y76kJumWn95v9PoW7A1WeNseyX2VINeodQ"
                 .to_string(),
         );
         map.insert(
-            "WOL_PROXY_SESSION_SECRET".to_string(),
+            "WAKEPROXY_SESSION_SECRET".to_string(),
             "super-secret-session-key".to_string(),
         );
 
@@ -638,7 +559,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             COOKIE,
-            HeaderValue::from_static("wol_session=secret; upstream_pref=abc; theme=dark"),
+            HeaderValue::from_static("wakeproxy_session=secret; upstream_pref=abc; theme=dark"),
         );
 
         strip_gateway_session_cookie(&mut headers);

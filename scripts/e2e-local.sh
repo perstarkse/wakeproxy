@@ -35,7 +35,7 @@ assert_eq() {
 }
 
 echo "Building local binaries..."
-cargo build --quiet --bin wol-web-proxy --example mock-upstream --example password-hash --manifest-path "$ROOT_DIR/Cargo.toml"
+cargo build --quiet --bin wakeproxy --example mock-upstream --example password-hash --manifest-path "$ROOT_DIR/Cargo.toml"
 
 echo "Preparing test configuration..."
 PASSWORD_HASH="$(cargo run --quiet --example password-hash --manifest-path "$ROOT_DIR/Cargo.toml" -- "$PASSWORD")"
@@ -45,22 +45,22 @@ echo "Starting mock upstream on port $UPSTREAM_PORT..."
 "$ROOT_DIR/target/debug/examples/mock-upstream" "$UPSTREAM_PORT" >"$TMP_DIR/upstream.log" 2>&1 &
 UPSTREAM_PID="$!"
 
-export WOL_PROXY_UPSTREAM_HOST="127.0.0.1"
-export WOL_PROXY_UPSTREAM_PORT="$UPSTREAM_PORT"
-export WOL_PROXY_HEALTH_PATH="/health"
-export WOL_PROXY_WOL_MAC="aa:bb:cc:dd:ee:ff"
-export WOL_PROXY_WOL_BROADCAST_IP="127.255.255.255"
-export WOL_PROXY_WOL_BROADCAST_PORT="9"
-export WOL_PROXY_WAKE_TIMEOUT="10"
-export WOL_PROXY_POLL_INTERVAL="1"
-export WOL_PROXY_BIND_ADDR="127.0.0.1:$GATEWAY_PORT"
-export WOL_PROXY_PASSWORD_HASH="$PASSWORD_HASH"
-export WOL_PROXY_SESSION_SECRET="$SESSION_SECRET"
-export WOL_PROXY_COOKIE_SECURE="false"
-export WOL_PROXY_LOGIN_MAX_FAILURES="1000"
+export WAKEPROXY_UPSTREAM_HOST="127.0.0.1"
+export WAKEPROXY_UPSTREAM_PORT="$UPSTREAM_PORT"
+export WAKEPROXY_HEALTH_PATH="/health"
+export WAKEPROXY_WOL_MAC="aa:bb:cc:dd:ee:ff"
+export WAKEPROXY_WOL_BROADCAST_IP="127.255.255.255"
+export WAKEPROXY_WOL_BROADCAST_PORT="9"
+export WAKEPROXY_WAKE_TIMEOUT="10"
+export WAKEPROXY_POLL_INTERVAL="1"
+export WAKEPROXY_BIND_ADDR="127.0.0.1:$GATEWAY_PORT"
+export WAKEPROXY_PASSWORD_HASH="$PASSWORD_HASH"
+export WAKEPROXY_SESSION_SECRET="$SESSION_SECRET"
+export WAKEPROXY_COOKIE_SECURE="false"
+export WAKEPROXY_LOGIN_MAX_FAILURES="1000"
 
 echo "Starting gateway on port $GATEWAY_PORT..."
-"$ROOT_DIR/target/debug/wol-web-proxy" >"$TMP_DIR/gateway.log" 2>&1 &
+"$ROOT_DIR/target/debug/wakeproxy" >"$TMP_DIR/gateway.log" 2>&1 &
 GATEWAY_PID="$!"
 
 echo "Waiting for gateway readiness..."

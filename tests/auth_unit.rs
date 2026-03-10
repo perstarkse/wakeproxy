@@ -7,8 +7,8 @@ use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHasher, SaltString};
 use axum::http::HeaderMap;
 use axum::http::header::COOKIE;
-use wol_web_proxy::auth::{AuthService, LoginResult, parse_cookie};
-use wol_web_proxy::config::Config;
+use wakeproxy::auth::{AuthService, LoginResult, parse_cookie};
+use wakeproxy::config::Config;
 
 fn build_config(password: &str) -> Config {
     let salt = SaltString::generate(&mut OsRng);
@@ -18,23 +18,23 @@ fn build_config(password: &str) -> Config {
         .to_string();
 
     let mut map = HashMap::new();
-    map.insert("WOL_PROXY_UPSTREAM_HOST".to_string(), "charon".to_string());
-    map.insert("WOL_PROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
+    map.insert("WAKEPROXY_UPSTREAM_HOST".to_string(), "charon".to_string());
+    map.insert("WAKEPROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
     map.insert(
-        "WOL_PROXY_WOL_MAC".to_string(),
+        "WAKEPROXY_WOL_MAC".to_string(),
         "aa:bb:cc:dd:ee:ff".to_string(),
     );
     map.insert(
-        "WOL_PROXY_WOL_BROADCAST_IP".to_string(),
+        "WAKEPROXY_WOL_BROADCAST_IP".to_string(),
         "10.0.0.255".to_string(),
     );
-    map.insert("WOL_PROXY_PASSWORD_HASH".to_string(), password_hash);
+    map.insert("WAKEPROXY_PASSWORD_HASH".to_string(), password_hash);
     map.insert(
-        "WOL_PROXY_SESSION_SECRET".to_string(),
+        "WAKEPROXY_SESSION_SECRET".to_string(),
         "super-secret-session-key".to_string(),
     );
-    map.insert("WOL_PROXY_LOGIN_MAX_FAILURES".to_string(), "2".to_string());
-    map.insert("WOL_PROXY_LOGIN_LOCKOUT_SECS".to_string(), "30".to_string());
+    map.insert("WAKEPROXY_LOGIN_MAX_FAILURES".to_string(), "2".to_string());
+    map.insert("WAKEPROXY_LOGIN_LOCKOUT_SECS".to_string(), "30".to_string());
 
     Config::from_map(&map).expect("config")
 }
@@ -70,22 +70,22 @@ async fn locks_after_failed_attempts() {
 #[tokio::test]
 async fn malformed_hash_is_rejected_by_config() {
     let mut map = HashMap::new();
-    map.insert("WOL_PROXY_UPSTREAM_HOST".to_string(), "charon".to_string());
-    map.insert("WOL_PROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
+    map.insert("WAKEPROXY_UPSTREAM_HOST".to_string(), "charon".to_string());
+    map.insert("WAKEPROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
     map.insert(
-        "WOL_PROXY_WOL_MAC".to_string(),
+        "WAKEPROXY_WOL_MAC".to_string(),
         "aa:bb:cc:dd:ee:ff".to_string(),
     );
     map.insert(
-        "WOL_PROXY_WOL_BROADCAST_IP".to_string(),
+        "WAKEPROXY_WOL_BROADCAST_IP".to_string(),
         "10.0.0.255".to_string(),
     );
     map.insert(
-        "WOL_PROXY_PASSWORD_HASH".to_string(),
+        "WAKEPROXY_PASSWORD_HASH".to_string(),
         "not-a-hash".to_string(),
     );
     map.insert(
-        "WOL_PROXY_SESSION_SECRET".to_string(),
+        "WAKEPROXY_SESSION_SECRET".to_string(),
         "super-secret-session-key".to_string(),
     );
 
@@ -95,14 +95,14 @@ async fn malformed_hash_is_rejected_by_config() {
 #[tokio::test]
 async fn expired_lockout_is_cleared_on_next_attempt() {
     let mut map = HashMap::new();
-    map.insert("WOL_PROXY_UPSTREAM_HOST".to_string(), "charon".to_string());
-    map.insert("WOL_PROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
+    map.insert("WAKEPROXY_UPSTREAM_HOST".to_string(), "charon".to_string());
+    map.insert("WAKEPROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
     map.insert(
-        "WOL_PROXY_WOL_MAC".to_string(),
+        "WAKEPROXY_WOL_MAC".to_string(),
         "aa:bb:cc:dd:ee:ff".to_string(),
     );
     map.insert(
-        "WOL_PROXY_WOL_BROADCAST_IP".to_string(),
+        "WAKEPROXY_WOL_BROADCAST_IP".to_string(),
         "10.0.0.255".to_string(),
     );
 
@@ -111,13 +111,13 @@ async fn expired_lockout_is_cleared_on_next_attempt() {
         .hash_password("correct".as_bytes(), &salt)
         .expect("hash")
         .to_string();
-    map.insert("WOL_PROXY_PASSWORD_HASH".to_string(), password_hash);
+    map.insert("WAKEPROXY_PASSWORD_HASH".to_string(), password_hash);
     map.insert(
-        "WOL_PROXY_SESSION_SECRET".to_string(),
+        "WAKEPROXY_SESSION_SECRET".to_string(),
         "super-secret-session-key".to_string(),
     );
-    map.insert("WOL_PROXY_LOGIN_MAX_FAILURES".to_string(), "1".to_string());
-    map.insert("WOL_PROXY_LOGIN_LOCKOUT_SECS".to_string(), "0".to_string());
+    map.insert("WAKEPROXY_LOGIN_MAX_FAILURES".to_string(), "1".to_string());
+    map.insert("WAKEPROXY_LOGIN_LOCKOUT_SECS".to_string(), "0".to_string());
 
     let config = Config::from_map(&map).expect("config");
     let auth = AuthService::new(&config);
@@ -134,14 +134,14 @@ async fn expired_lockout_is_cleared_on_next_attempt() {
 #[tokio::test]
 async fn active_lockout_returns_retry_after_then_expires() {
     let mut map = HashMap::new();
-    map.insert("WOL_PROXY_UPSTREAM_HOST".to_string(), "charon".to_string());
-    map.insert("WOL_PROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
+    map.insert("WAKEPROXY_UPSTREAM_HOST".to_string(), "charon".to_string());
+    map.insert("WAKEPROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
     map.insert(
-        "WOL_PROXY_WOL_MAC".to_string(),
+        "WAKEPROXY_WOL_MAC".to_string(),
         "aa:bb:cc:dd:ee:ff".to_string(),
     );
     map.insert(
-        "WOL_PROXY_WOL_BROADCAST_IP".to_string(),
+        "WAKEPROXY_WOL_BROADCAST_IP".to_string(),
         "10.0.0.255".to_string(),
     );
 
@@ -150,13 +150,13 @@ async fn active_lockout_returns_retry_after_then_expires() {
         .hash_password("correct".as_bytes(), &salt)
         .expect("hash")
         .to_string();
-    map.insert("WOL_PROXY_PASSWORD_HASH".to_string(), password_hash);
+    map.insert("WAKEPROXY_PASSWORD_HASH".to_string(), password_hash);
     map.insert(
-        "WOL_PROXY_SESSION_SECRET".to_string(),
+        "WAKEPROXY_SESSION_SECRET".to_string(),
         "super-secret-session-key".to_string(),
     );
-    map.insert("WOL_PROXY_LOGIN_MAX_FAILURES".to_string(), "1".to_string());
-    map.insert("WOL_PROXY_LOGIN_LOCKOUT_SECS".to_string(), "1".to_string());
+    map.insert("WAKEPROXY_LOGIN_MAX_FAILURES".to_string(), "1".to_string());
+    map.insert("WAKEPROXY_LOGIN_LOCKOUT_SECS".to_string(), "1".to_string());
 
     let config = Config::from_map(&map).expect("config");
     let auth = AuthService::new(&config);
@@ -180,7 +180,7 @@ async fn active_lockout_returns_retry_after_then_expires() {
 async fn parse_cookie_returns_none_for_non_matching_key() {
     let mut headers = HeaderMap::new();
     headers.insert(COOKIE, "foo=bar; baz=qux".parse().expect("cookie"));
-    assert!(parse_cookie(&headers, "wol_session").is_none());
+    assert!(parse_cookie(&headers, "wakeproxy_session").is_none());
 }
 
 #[tokio::test]
@@ -193,14 +193,14 @@ async fn logout_without_session_cookie_is_noop() {
 #[tokio::test]
 async fn many_ips_exercise_attempt_pruning_path() {
     let mut map = HashMap::new();
-    map.insert("WOL_PROXY_UPSTREAM_HOST".to_string(), "charon".to_string());
-    map.insert("WOL_PROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
+    map.insert("WAKEPROXY_UPSTREAM_HOST".to_string(), "charon".to_string());
+    map.insert("WAKEPROXY_UPSTREAM_PORT".to_string(), "3000".to_string());
     map.insert(
-        "WOL_PROXY_WOL_MAC".to_string(),
+        "WAKEPROXY_WOL_MAC".to_string(),
         "aa:bb:cc:dd:ee:ff".to_string(),
     );
     map.insert(
-        "WOL_PROXY_WOL_BROADCAST_IP".to_string(),
+        "WAKEPROXY_WOL_BROADCAST_IP".to_string(),
         "10.0.0.255".to_string(),
     );
 
@@ -209,13 +209,13 @@ async fn many_ips_exercise_attempt_pruning_path() {
         .hash_password("correct".as_bytes(), &salt)
         .expect("hash")
         .to_string();
-    map.insert("WOL_PROXY_PASSWORD_HASH".to_string(), password_hash);
+    map.insert("WAKEPROXY_PASSWORD_HASH".to_string(), password_hash);
     map.insert(
-        "WOL_PROXY_SESSION_SECRET".to_string(),
+        "WAKEPROXY_SESSION_SECRET".to_string(),
         "super-secret-session-key".to_string(),
     );
     map.insert(
-        "WOL_PROXY_LOGIN_MAX_TRACKED_IPS".to_string(),
+        "WAKEPROXY_LOGIN_MAX_TRACKED_IPS".to_string(),
         "2".to_string(),
     );
 

@@ -130,26 +130,26 @@ mod tests {
     fn config_with_health_path(path: &str) -> Config {
         let mut map = HashMap::new();
         map.insert(
-            "WOL_PROXY_UPSTREAM_HOST".to_string(),
+            "WAKEPROXY_UPSTREAM_HOST".to_string(),
             "127.0.0.1".to_string(),
         );
-        map.insert("WOL_PROXY_UPSTREAM_PORT".to_string(), "65534".to_string());
-        map.insert("WOL_PROXY_HEALTH_PATH".to_string(), path.to_string());
+        map.insert("WAKEPROXY_UPSTREAM_PORT".to_string(), "65534".to_string());
+        map.insert("WAKEPROXY_HEALTH_PATH".to_string(), path.to_string());
         map.insert(
-            "WOL_PROXY_WOL_MAC".to_string(),
+            "WAKEPROXY_WOL_MAC".to_string(),
             "aa:bb:cc:dd:ee:ff".to_string(),
         );
         map.insert(
-            "WOL_PROXY_WOL_BROADCAST_IP".to_string(),
+            "WAKEPROXY_WOL_BROADCAST_IP".to_string(),
             "127.255.255.255".to_string(),
         );
         map.insert(
-            "WOL_PROXY_PASSWORD_HASH".to_string(),
+            "WAKEPROXY_PASSWORD_HASH".to_string(),
             "$argon2id$v=19$m=19456,t=2,p=1$dGVzdHRlc3R0ZXN0dGVzdA$0xDPfypM3Y76kJumWn95v9PoW7A1WeNseyX2VINeodQ"
                 .to_string(),
         );
         map.insert(
-            "WOL_PROXY_SESSION_SECRET".to_string(),
+            "WAKEPROXY_SESSION_SECRET".to_string(),
             "integration-test-secret".to_string(),
         );
         Config::from_map(&map).expect("config")

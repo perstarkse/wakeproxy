@@ -7,8 +7,8 @@ use axum::Router;
 use axum::routing::get;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
-use wol_web_proxy::readiness::ReadinessProbe;
-use wol_web_proxy::wake::{
+use wakeproxy::readiness::ReadinessProbe;
+use wakeproxy::wake::{
     EnsureReadyResult, WakeConfig, WakeCoordinator, WakePacketSender, WakeSendError,
 };
 

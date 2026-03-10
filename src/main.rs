@@ -7,19 +7,19 @@ use thiserror::Error;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
-use wol_web_proxy::config::Config;
-use wol_web_proxy::readiness::SystemReadinessProbe;
-use wol_web_proxy::wake::{UdpWakeSender, WakeConfig, WakeCoordinator};
-use wol_web_proxy::web::{self, AppState};
+use wakeproxy::config::Config;
+use wakeproxy::readiness::SystemReadinessProbe;
+use wakeproxy::wake::{UdpWakeSender, WakeConfig, WakeCoordinator};
+use wakeproxy::web::{self, AppState};
 
 #[derive(Debug, Error)]
 pub enum StartupError {
     #[error(transparent)]
-    Config(#[from] wol_web_proxy::config::ConfigError),
+    Config(#[from] wakeproxy::config::ConfigError),
     #[error(transparent)]
-    Templates(#[from] wol_web_proxy::web::TemplateLoadError),
+    Templates(#[from] wakeproxy::web::TemplateLoadError),
     #[error(transparent)]
-    Readiness(#[from] wol_web_proxy::readiness::ReadinessError),
+    Readiness(#[from] wakeproxy::readiness::ReadinessError),
     #[error("failed to bind listener at {addr}")]
     Bind {
         addr: std::net::SocketAddr,
@@ -66,7 +66,7 @@ async fn main() -> Result<(), StartupError> {
             addr: bind_addr,
             source,
         })?;
-    info!(bind_addr = %bind_addr, "wol-web-proxy listening");
+    info!(bind_addr = %bind_addr, "wakeproxy listening");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),

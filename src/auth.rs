@@ -15,7 +15,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::config::Config;
 
-const SESSION_COOKIE_NAME: &str = "wol_session";
+const SESSION_COOKIE_NAME: &str = "wakeproxy_session";
 
 #[derive(Clone)]
 pub struct AuthService {
