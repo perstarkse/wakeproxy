@@ -12,10 +12,12 @@
 <p class="alert">Enter your password to continue.</p>
 {% endif %}
 
-<form method="post" action="/_auth/login">
+<form method="post" action="/_auth/login" autocomplete="on">
   <input type="hidden" name="next" value="{{ next }}" />
+  <label for="username" class="visually-hidden">Username</label>
+  <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" inputmode="email" class="visually-hidden" value="gateway" tabindex="-1" aria-hidden="true" />
   <label for="password">Password</label>
-  <input id="password" name="password" type="password" required autofocus autocomplete="current-password" />
+  <input id="password" name="password" type="password" required autofocus autocomplete="current-password webauthn" autocorrect="off" spellcheck="false" />
   <button type="submit">Sign in</button>
 </form>
 {% endblock body %}

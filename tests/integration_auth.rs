@@ -73,6 +73,8 @@ async fn login_page_renders_html() {
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     let body = response.text().await.expect("body");
     assert!(body.contains("Wake Proxy Login"));
+    assert!(body.contains("autocomplete=\"username\""));
+    assert!(body.contains("autocomplete=\"current-password webauthn\""));
 }
 
 #[tokio::test]
