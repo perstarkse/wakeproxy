@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use argon2::password_hash::PasswordHash;
@@ -29,6 +30,8 @@ pub struct Config {
     pub trust_proxy_headers: bool,
     pub trusted_proxy_ips: Vec<IpAddr>,
     pub login_max_tracked_ips: usize,
+    pub keep_awake_command: Option<PathBuf>,
+    pub keep_awake_max_secs: u64,
 }
 
 #[derive(Debug, Error)]
@@ -125,6 +128,15 @@ impl Config {
         let trusted_proxy_ips = parse_ip_list(map, "WAKEPROXY_TRUSTED_PROXY_IPS")?;
         let login_max_tracked_ips =
             parse_optional::<usize>(map, "WAKEPROXY_LOGIN_MAX_TRACKED_IPS", 10_000)?;
+        let keep_awake_command = parse_optional_path(map, "WAKEPROXY_KEEP_AWAKE_COMMAND");
+        let keep_awake_max_secs =
+            parse_optional::<u64>(map, "WAKEPROXY_KEEP_AWAKE_MAX_SECS", 14_400)?;
+        if keep_awake_max_secs == 0 {
+            return Err(ConfigError::InvalidValue {
+                name: "WAKEPROXY_KEEP_AWAKE_MAX_SECS",
+                value: "value must be greater than zero".to_string(),
+            });
+        }
 
         Ok(Self {
             upstream_host,
@@ -148,6 +160,8 @@ impl Config {
             trust_proxy_headers,
             trusted_proxy_ips,
             login_max_tracked_ips,
+            keep_awake_command,
+            keep_awake_max_secs,
         })
     }
 
@@ -214,6 +228,13 @@ fn parse_optional_secs(
 ) -> Result<Duration, ConfigError> {
     let seconds = parse_optional::<u64>(map, key, default)?;
     Ok(Duration::from_secs(seconds))
+}
+
+fn parse_optional_path(map: &HashMap<String, String>, key: &'static str) -> Option<PathBuf> {
+    map.get(key)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 fn parse_mac(raw: &str) -> Result<[u8; 6], ConfigError> {
@@ -310,6 +331,8 @@ mod tests {
         assert_eq!(config.wake_timeout.as_secs(), 180);
         assert_eq!(config.poll_interval.as_secs(), 2);
         assert_eq!(config.wake_poll_interval_ms, 2000);
+        assert_eq!(config.keep_awake_command, None);
+        assert_eq!(config.keep_awake_max_secs, 14_400);
     }
 
     #[test]
@@ -491,6 +514,39 @@ mod tests {
             Config::from_map(&env),
             Err(ConfigError::InvalidValue {
                 name: "WAKEPROXY_WAKE_POLL_INTERVAL_MS",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn config_parses_keep_awake_overrides() {
+        let mut env = valid_env();
+        env.insert(
+            "WAKEPROXY_KEEP_AWAKE_COMMAND".to_string(),
+            "/usr/local/bin/keep-awake".to_string(),
+        );
+        env.insert(
+            "WAKEPROXY_KEEP_AWAKE_MAX_SECS".to_string(),
+            "7200".to_string(),
+        );
+
+        let config = Config::from_map(&env).expect("config");
+        assert_eq!(
+            config.keep_awake_command,
+            Some(std::path::PathBuf::from("/usr/local/bin/keep-awake"))
+        );
+        assert_eq!(config.keep_awake_max_secs, 7200);
+    }
+
+    #[test]
+    fn config_fails_on_zero_keep_awake_max_secs() {
+        let mut env = valid_env();
+        env.insert("WAKEPROXY_KEEP_AWAKE_MAX_SECS".to_string(), "0".to_string());
+        assert!(matches!(
+            Config::from_map(&env),
+            Err(ConfigError::InvalidValue {
+                name: "WAKEPROXY_KEEP_AWAKE_MAX_SECS",
                 ..
             })
         ));

@@ -1,4 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -6,7 +8,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, watch};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::readiness::ReadinessProbe;
 
@@ -56,6 +58,15 @@ pub struct WakeConfig {
     pub wake_timeout: Duration,
     pub poll_interval: Duration,
     pub ready_cache_ttl: Duration,
+    pub keep_awake_max: Duration,
+}
+
+#[derive(Debug, Error)]
+pub enum KeepAwakeError {
+    #[error("keep-awake command failed")]
+    Io(#[from] std::io::Error),
+    #[error("keep-awake command exited with status {status}: {stderr}")]
+    CommandFailed { status: i32, stderr: String },
 }
 
 #[derive(Debug, Error)]
@@ -69,6 +80,57 @@ pub enum WakeSendError {
 #[async_trait]
 pub trait WakePacketSender: Send + Sync {
     async fn send_magic_packet(&self) -> Result<(), WakeSendError>;
+}
+
+#[async_trait]
+pub trait KeepAwakeRunner: Send + Sync {
+    async fn keep_awake(&self, duration: Duration) -> Result<(), KeepAwakeError>;
+}
+
+#[derive(Clone)]
+pub struct NoopKeepAwakeRunner;
+
+#[async_trait]
+impl KeepAwakeRunner for NoopKeepAwakeRunner {
+    async fn keep_awake(&self, _duration: Duration) -> Result<(), KeepAwakeError> {
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct CommandKeepAwakeRunner {
+    command: PathBuf,
+}
+
+impl CommandKeepAwakeRunner {
+    pub fn new(command: impl AsRef<Path>) -> Self {
+        Self {
+            command: command.as_ref().to_path_buf(),
+        }
+    }
+}
+
+#[async_trait]
+impl KeepAwakeRunner for CommandKeepAwakeRunner {
+    async fn keep_awake(&self, duration: Duration) -> Result<(), KeepAwakeError> {
+        let output = tokio::process::Command::new(&self.command)
+            .arg(duration.as_secs().to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(KeepAwakeError::CommandFailed {
+            status: output.status.code().unwrap_or_default(),
+            stderr,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -106,6 +168,7 @@ pub struct WakeCoordinator {
     config: WakeConfig,
     sender: Arc<dyn WakePacketSender>,
     probe: Arc<dyn ReadinessProbe>,
+    keep_awake: Arc<dyn KeepAwakeRunner>,
     inner: Arc<Mutex<Inner>>,
 }
 
@@ -138,11 +201,13 @@ impl WakeCoordinator {
         config: WakeConfig,
         sender: Arc<dyn WakePacketSender>,
         probe: Arc<dyn ReadinessProbe>,
+        keep_awake: Arc<dyn KeepAwakeRunner>,
     ) -> Self {
         Self {
             config,
             sender,
             probe,
+            keep_awake,
             inner: Arc::new(Mutex::new(Inner {
                 next_cycle_id: 1,
                 current_cycle: None,
@@ -162,14 +227,16 @@ impl WakeCoordinator {
         self.wait_for_cycle(cycle, max_wait).await
     }
 
-    pub async fn start_wake(&self) -> WakeStartResult {
+    pub async fn start_wake(&self, keep_awake_for: Option<Duration>) -> WakeStartResult {
         if let Some(cycle_id) = self.check_ready_cache().await {
+            self.start_keep_awake(keep_awake_for);
             return WakeStartResult::AlreadyReady {
                 cycle_id: Some(cycle_id),
             };
         }
 
         let (cycle, started_new) = self.get_or_start_cycle().await;
+        self.start_keep_awake(keep_awake_for);
         if started_new {
             WakeStartResult::Started { cycle_id: cycle.id }
         } else {
@@ -242,6 +309,24 @@ impl WakeCoordinator {
             return inner.last_ready_cycle_id;
         }
         None
+    }
+
+    fn start_keep_awake(&self, keep_awake_for: Option<Duration>) {
+        let Some(duration) = keep_awake_for else {
+            return;
+        };
+
+        let bounded_duration = duration.min(self.config.keep_awake_max);
+        let keep_awake = self.keep_awake.clone();
+        tokio::spawn(async move {
+            if let Err(error) = keep_awake.keep_awake(bounded_duration).await {
+                warn!(
+                    ?error,
+                    seconds = bounded_duration.as_secs(),
+                    "keep-awake request failed"
+                );
+            }
+        });
     }
 
     async fn get_or_start_cycle(&self) -> (Arc<WakeCycle>, bool) {
@@ -438,13 +523,14 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use tokio::sync::watch;
+    use tokio::sync::{Mutex, watch};
 
     use crate::readiness::ReadinessProbe;
 
     use super::{
-        EnsureReadyResult, UdpWakeSender, WakeConfig, WakeCoordinator, WakeCycle, WakeOutcome,
-        WakePacketSender, WakeSendError, WakeStartResult, WakeState,
+        EnsureReadyResult, KeepAwakeError, KeepAwakeRunner, NoopKeepAwakeRunner, UdpWakeSender,
+        WakeConfig, WakeCoordinator, WakeCycle, WakeOutcome, WakePacketSender, WakeSendError,
+        WakeStartResult, WakeState,
     };
 
     #[derive(Clone)]
@@ -463,6 +549,26 @@ mod tests {
     #[derive(Clone)]
     struct MockProbe {
         checks: Arc<AtomicUsize>,
+    }
+
+    #[derive(Clone)]
+    struct MockKeepAwakeRunner {
+        durations: Arc<Mutex<Vec<Duration>>>,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl KeepAwakeRunner for MockKeepAwakeRunner {
+        async fn keep_awake(&self, duration: Duration) -> Result<(), KeepAwakeError> {
+            self.durations.lock().await.push(duration);
+            if self.fail {
+                return Err(KeepAwakeError::CommandFailed {
+                    status: 1,
+                    stderr: "simulated keep-awake failure".to_string(),
+                });
+            }
+            Ok(())
+        }
     }
 
     #[derive(Clone)]
@@ -529,9 +635,11 @@ mod tests {
                 wake_timeout: Duration::from_secs(10),
                 poll_interval: Duration::from_millis(10),
                 ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             sender,
             probe,
+            Arc::new(NoopKeepAwakeRunner),
         );
 
         let mut tasks = Vec::new();
@@ -562,11 +670,13 @@ mod tests {
                 wake_timeout: Duration::from_secs(2),
                 poll_interval: Duration::from_millis(50),
                 ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             Arc::new(MockWakeSender {
                 sends: Arc::new(AtomicUsize::new(0)),
             }),
             Arc::new(NeverReadyProbe),
+            Arc::new(NoopKeepAwakeRunner),
         );
 
         // The short max_wait forces the caller-visible "still waking" path
@@ -582,11 +692,13 @@ mod tests {
                 wake_timeout: Duration::from_millis(80),
                 poll_interval: Duration::from_millis(20),
                 ready_cache_ttl: Duration::from_millis(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             Arc::new(MockWakeSender {
                 sends: Arc::new(AtomicUsize::new(0)),
             }),
             Arc::new(NeverReadyProbe),
+            Arc::new(NoopKeepAwakeRunner),
         );
 
         let result = coordinator.ensure_ready(Duration::from_secs(1)).await;
@@ -600,9 +712,11 @@ mod tests {
                 wake_timeout: Duration::from_secs(1),
                 poll_interval: Duration::from_millis(10),
                 ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             Arc::new(FailingWakeSender),
             Arc::new(NeverReadyProbe),
+            Arc::new(NoopKeepAwakeRunner),
         );
 
         let result = coordinator.ensure_ready(Duration::from_secs(1)).await;
@@ -617,6 +731,7 @@ mod tests {
                 wake_timeout: Duration::from_secs(1),
                 poll_interval: Duration::from_millis(10),
                 ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             Arc::new(MockWakeSender {
                 sends: sends.clone(),
@@ -624,6 +739,7 @@ mod tests {
             Arc::new(MockProbe {
                 checks: Arc::new(AtomicUsize::new(10)),
             }),
+            Arc::new(NoopKeepAwakeRunner),
         );
 
         let first = coordinator.ensure_ready(Duration::from_secs(1)).await;
@@ -662,11 +778,13 @@ mod tests {
                 wake_timeout: Duration::from_secs(1),
                 poll_interval: Duration::from_millis(10),
                 ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             Arc::new(MockWakeSender {
                 sends: Arc::new(AtomicUsize::new(0)),
             }),
             Arc::new(NeverReadyProbe),
+            Arc::new(NoopKeepAwakeRunner),
         );
 
         let (state_tx, _) = watch::channel(WakeState::Waking);
@@ -694,11 +812,13 @@ mod tests {
                 wake_timeout: Duration::from_secs(1),
                 poll_interval: Duration::from_millis(10),
                 ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             Arc::new(MockWakeSender {
                 sends: Arc::new(AtomicUsize::new(0)),
             }),
             Arc::new(NeverReadyProbe),
+            Arc::new(NoopKeepAwakeRunner),
         );
 
         let (state_tx, _) = watch::channel(WakeState::Ready);
@@ -722,11 +842,13 @@ mod tests {
                 wake_timeout: Duration::from_secs(1),
                 poll_interval: Duration::from_millis(10),
                 ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             Arc::new(MockWakeSender {
                 sends: Arc::new(AtomicUsize::new(0)),
             }),
             Arc::new(NeverReadyProbe),
+            Arc::new(NoopKeepAwakeRunner),
         );
 
         let (state_tx, _) = watch::channel(WakeState::Waking);
@@ -763,11 +885,13 @@ mod tests {
                 wake_timeout: Duration::from_secs(1),
                 poll_interval: Duration::from_millis(10),
                 ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             Arc::new(MockWakeSender {
                 sends: Arc::new(AtomicUsize::new(0)),
             }),
             Arc::new(NeverReadyProbe),
+            Arc::new(NoopKeepAwakeRunner),
         );
 
         let snapshot = coordinator.status_snapshot().await;
@@ -782,15 +906,17 @@ mod tests {
                 wake_timeout: Duration::from_secs(1),
                 poll_interval: Duration::from_millis(10),
                 ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             Arc::new(MockWakeSender {
                 sends: Arc::new(AtomicUsize::new(0)),
             }),
             Arc::new(NeverReadyProbe),
+            Arc::new(NoopKeepAwakeRunner),
         );
 
-        let first = coordinator.start_wake().await;
-        let second = coordinator.start_wake().await;
+        let first = coordinator.start_wake(None).await;
+        let second = coordinator.start_wake(None).await;
 
         assert!(matches!(first, WakeStartResult::Started { .. }));
         assert!(matches!(second, WakeStartResult::AlreadyWaking { .. }));
@@ -803,6 +929,7 @@ mod tests {
                 wake_timeout: Duration::from_secs(1),
                 poll_interval: Duration::from_millis(10),
                 ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             Arc::new(MockWakeSender {
                 sends: Arc::new(AtomicUsize::new(0)),
@@ -810,6 +937,7 @@ mod tests {
             Arc::new(MockProbe {
                 checks: Arc::new(AtomicUsize::new(10)),
             }),
+            Arc::new(NoopKeepAwakeRunner),
         );
 
         assert!(matches!(
@@ -817,7 +945,7 @@ mod tests {
             EnsureReadyResult::Ready { .. }
         ));
 
-        let start = coordinator.start_wake().await;
+        let start = coordinator.start_wake(None).await;
         assert!(matches!(
             start,
             WakeStartResult::AlreadyReady { cycle_id: Some(_) }
@@ -831,6 +959,7 @@ mod tests {
                 wake_timeout: Duration::from_secs(1),
                 poll_interval: Duration::from_millis(10),
                 ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             Arc::new(MockWakeSender {
                 sends: Arc::new(AtomicUsize::new(0)),
@@ -838,6 +967,7 @@ mod tests {
             Arc::new(MockProbe {
                 checks: Arc::new(AtomicUsize::new(10)),
             }),
+            Arc::new(NoopKeepAwakeRunner),
         );
 
         assert!(matches!(
@@ -858,11 +988,13 @@ mod tests {
                 wake_timeout: Duration::from_secs(1),
                 poll_interval: Duration::from_millis(10),
                 ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             Arc::new(MockWakeSender {
                 sends: Arc::new(AtomicUsize::new(0)),
             }),
             Arc::new(NeverReadyProbe),
+            Arc::new(NoopKeepAwakeRunner),
         );
 
         let (state_tx, _) = watch::channel(WakeState::Waking);
@@ -891,11 +1023,13 @@ mod tests {
                 wake_timeout: Duration::from_secs(1),
                 poll_interval: Duration::from_millis(10),
                 ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             Arc::new(MockWakeSender {
                 sends: Arc::new(AtomicUsize::new(0)),
             }),
             Arc::new(NeverReadyProbe),
+            Arc::new(NoopKeepAwakeRunner),
         );
 
         let (state_tx, _) = watch::channel(WakeState::Ready);
@@ -924,11 +1058,13 @@ mod tests {
                 wake_timeout: Duration::from_secs(1),
                 poll_interval: Duration::from_millis(10),
                 ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             Arc::new(MockWakeSender {
                 sends: Arc::new(AtomicUsize::new(0)),
             }),
             Arc::new(NeverReadyProbe),
+            Arc::new(NoopKeepAwakeRunner),
         );
 
         {
@@ -948,11 +1084,13 @@ mod tests {
                 wake_timeout: Duration::from_millis(80),
                 poll_interval: Duration::from_millis(20),
                 ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
             },
             Arc::new(MockWakeSender {
                 sends: Arc::new(AtomicUsize::new(0)),
             }),
             Arc::new(PingDownProbe),
+            Arc::new(NoopKeepAwakeRunner),
         );
 
         let result = coordinator.ensure_ready(Duration::from_secs(1)).await;
@@ -963,5 +1101,89 @@ mod tests {
     async fn ping_down_probe_health_method_returns_false() {
         let probe = PingDownProbe;
         assert!(!probe.health().await);
+    }
+
+    #[tokio::test]
+    async fn start_wake_requests_keep_awake_when_duration_is_present() {
+        let durations = Arc::new(Mutex::new(Vec::new()));
+        let coordinator = WakeCoordinator::new(
+            WakeConfig {
+                wake_timeout: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
+                ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(3_600),
+            },
+            Arc::new(MockWakeSender {
+                sends: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(NeverReadyProbe),
+            Arc::new(MockKeepAwakeRunner {
+                durations: durations.clone(),
+                fail: false,
+            }),
+        );
+
+        let _ = coordinator.start_wake(Some(Duration::from_secs(600))).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let seen = durations.lock().await.clone();
+        assert_eq!(seen, vec![Duration::from_secs(600)]);
+    }
+
+    #[tokio::test]
+    async fn start_wake_bounds_keep_awake_duration() {
+        let durations = Arc::new(Mutex::new(Vec::new()));
+        let coordinator = WakeCoordinator::new(
+            WakeConfig {
+                wake_timeout: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
+                ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(900),
+            },
+            Arc::new(MockWakeSender {
+                sends: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(NeverReadyProbe),
+            Arc::new(MockKeepAwakeRunner {
+                durations: durations.clone(),
+                fail: false,
+            }),
+        );
+
+        let _ = coordinator
+            .start_wake(Some(Duration::from_secs(3_600)))
+            .await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let seen = durations.lock().await.clone();
+        assert_eq!(seen, vec![Duration::from_secs(900)]);
+    }
+
+    #[tokio::test]
+    async fn keep_awake_failure_does_not_change_start_wake_result() {
+        let durations = Arc::new(Mutex::new(Vec::new()));
+        let coordinator = WakeCoordinator::new(
+            WakeConfig {
+                wake_timeout: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
+                ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(3_600),
+            },
+            Arc::new(MockWakeSender {
+                sends: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(NeverReadyProbe),
+            Arc::new(MockKeepAwakeRunner {
+                durations: durations.clone(),
+                fail: true,
+            }),
+        );
+
+        let start = coordinator.start_wake(Some(Duration::from_secs(600))).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(matches!(start, WakeStartResult::Started { .. }));
+        let seen = durations.lock().await.clone();
+        assert_eq!(seen, vec![Duration::from_secs(600)]);
     }
 }

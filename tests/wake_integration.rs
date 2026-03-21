@@ -9,7 +9,8 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use wakeproxy::readiness::ReadinessProbe;
 use wakeproxy::wake::{
-    EnsureReadyResult, WakeConfig, WakeCoordinator, WakePacketSender, WakeSendError,
+    EnsureReadyResult, NoopKeepAwakeRunner, WakeConfig, WakeCoordinator, WakePacketSender,
+    WakeSendError,
 };
 
 #[derive(Clone)]
@@ -76,9 +77,11 @@ async fn delayed_upstream_only_triggers_single_wake_cycle() {
             wake_timeout: Duration::from_secs(4),
             poll_interval: Duration::from_millis(40),
             ready_cache_ttl: Duration::from_secs(2),
+            keep_awake_max: Duration::from_secs(14_400),
         },
         sender,
         probe,
+        Arc::new(NoopKeepAwakeRunner),
     );
 
     let mut tasks = Vec::new();

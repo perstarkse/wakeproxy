@@ -29,7 +29,9 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use wakeproxy::config::Config;
 use wakeproxy::readiness::ReadinessProbe;
-use wakeproxy::wake::{WakeConfig, WakeCoordinator, WakePacketSender, WakeSendError};
+use wakeproxy::wake::{
+    NoopKeepAwakeRunner, WakeConfig, WakeCoordinator, WakePacketSender, WakeSendError,
+};
 use wakeproxy::web::{self, AppState};
 
 pub struct ServerHandle {
@@ -200,9 +202,11 @@ where
             wake_timeout: config.wake_timeout,
             poll_interval: config.poll_interval,
             ready_cache_ttl: config.ready_cache_ttl,
+            keep_awake_max: Duration::from_secs(config.keep_awake_max_secs),
         },
         Arc::new(sender),
         Arc::new(probe),
+        Arc::new(NoopKeepAwakeRunner),
     ));
 
     let proxy_client: Client<HttpConnector, Body> =

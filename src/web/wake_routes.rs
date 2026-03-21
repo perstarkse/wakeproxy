@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use axum::extract::{Form, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
@@ -18,6 +20,7 @@ pub(crate) struct WakeQuery {
 #[derive(serde::Deserialize)]
 pub(crate) struct WakeStartForm {
     pub(crate) next: Option<String>,
+    pub(crate) keep_awake_for_secs: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -132,8 +135,12 @@ pub(crate) async fn wake_start_submit(
     }
 
     let next = sanitize_next(form.next.as_deref()).unwrap_or_else(|| "/".to_string());
+    let keep_awake_for = form
+        .keep_awake_for_secs
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs);
 
-    if let WakeStartResult::AlreadyReady { .. } = state.wake.start_wake().await {
+    if let WakeStartResult::AlreadyReady { .. } = state.wake.start_wake(keep_awake_for).await {
         return redirect_response(&next, Some(&headers));
     }
 

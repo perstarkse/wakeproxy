@@ -1,3 +1,4 @@
+use std::fs;
 use std::time::Duration;
 
 use axum::http::header::{ACCEPT, COOKIE, LOCATION, USER_AGENT};
@@ -68,6 +69,9 @@ async fn wake_page_renders_status_when_upstream_is_sleeping() {
     assert!(body.contains("history.replaceState"));
     assert!(body.contains("window.location.reload()"));
     assert!(body.contains("Wake and connect"));
+    assert!(body.contains("name=\"keep_awake_for_secs\""));
+    assert!(body.contains("30 minutes"));
+    assert!(body.contains("1 hour"));
 }
 
 #[tokio::test]
@@ -199,6 +203,55 @@ async fn wake_page_ready_on_ios_document_navigation_uses_soft_redirect() {
     assert!(response.headers().get(LOCATION).is_none());
     let body = response.text().await.expect("body");
     assert!(body.contains("window.location.replace(\"/demo\")"));
+}
+
+#[tokio::test]
+async fn wake_start_with_keep_awake_failure_still_redirects_to_wake_page() {
+    let upstream = spawn_upstream().await;
+    let mut config = build_config(upstream.addr.port(), "password-keep-awake-fail");
+    config.wake_poll_interval_ms = 20;
+
+    let temp_dir = std::env::temp_dir().join(format!(
+        "wakeproxy-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir).expect("temp dir");
+    let command_path = temp_dir.join("keep-awake.sh");
+    fs::write(&command_path, "#!/bin/sh\necho boom >&2\nexit 1\n").expect("script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&command_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&command_path, permissions).expect("chmod");
+    }
+    config.keep_awake_command = Some(command_path);
+
+    let gateway = spawn_gateway(config, OkWakeSender, NeverReadyProbe).await;
+    let client = test_client();
+    let cookie =
+        login_and_extract_cookie(&client, &gateway.url(), "password-keep-awake-fail").await;
+
+    let start = client
+        .post(format!("{}/_wake/start", gateway.url()))
+        .header(COOKIE, &cookie)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("next=%2Fdemo&keep_awake_for_secs=3600")
+        .send()
+        .await
+        .expect("wake start response");
+
+    assert_eq!(start.status(), reqwest::StatusCode::SEE_OTHER);
+    assert_eq!(
+        start
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("/_wake?next=%2Fdemo")
+    );
 }
 
 #[tokio::test]

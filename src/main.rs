@@ -9,7 +9,9 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use wakeproxy::config::Config;
 use wakeproxy::readiness::SystemReadinessProbe;
-use wakeproxy::wake::{UdpWakeSender, WakeConfig, WakeCoordinator};
+use wakeproxy::wake::{
+    CommandKeepAwakeRunner, NoopKeepAwakeRunner, UdpWakeSender, WakeConfig, WakeCoordinator,
+};
 use wakeproxy::web::{self, AppState};
 
 #[derive(Debug, Error)]
@@ -46,14 +48,22 @@ async fn main() -> Result<(), StartupError> {
         config.wol_broadcast_ip,
         config.wol_broadcast_port,
     ));
+    let keep_awake_runner: Arc<dyn wakeproxy::wake::KeepAwakeRunner> =
+        if let Some(command) = config.keep_awake_command.as_ref() {
+            Arc::new(CommandKeepAwakeRunner::new(command))
+        } else {
+            Arc::new(NoopKeepAwakeRunner)
+        };
     let wake_coordinator = Arc::new(WakeCoordinator::new(
         WakeConfig {
             wake_timeout: config.wake_timeout,
             poll_interval: config.poll_interval,
             ready_cache_ttl: config.ready_cache_ttl,
+            keep_awake_max: std::time::Duration::from_secs(config.keep_awake_max_secs),
         },
         wake_sender,
         readiness_probe,
+        keep_awake_runner,
     ));
 
     let state = AppState::new(config, templates, wake_coordinator, http_client);

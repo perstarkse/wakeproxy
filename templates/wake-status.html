@@ -624,6 +624,15 @@
 
   <form method="post" action="/_wake/start" class="actions">
     <input type="hidden" name="next" value="{{ next }}" />
+    <label>
+      Keep awake
+      <select name="keep_awake_for_secs">
+        <option value="">No extra hold</option>
+        <option value="1800">30 minutes</option>
+        <option value="3600">1 hour</option>
+        <option value="14400">4 hours</option>
+      </select>
+    </label>
     <button type="submit" data-wake-action>{% if retryable %}Wake and connect{% else %}Wake in progress...{% endif %}</button>
     <a class="button-link secondary" href="/_auth/login">Back to login</a>
   </form>

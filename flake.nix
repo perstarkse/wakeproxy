@@ -18,7 +18,7 @@
   in {
     packages = forAllSystems (system: let
       pkgs = import nixpkgs {inherit system;};
-    in {
+    in rec {
       default = pkgs.rustPlatform.buildRustPackage {
         pname = "wakeproxy";
         version = "0.1.0";
@@ -34,6 +34,10 @@
           platforms = pkgs.lib.platforms.linux;
         };
       };
+
+      wakeproxy-keep-awake-target = import ./nix/packages/keep-awake-target.nix {
+        inherit pkgs;
+      };
     });
 
     apps = forAllSystems (system: {
@@ -42,5 +46,11 @@
         program = "${self.packages.${system}.default}/bin/wakeproxy";
       };
     });
+
+    nixosModules = {
+      default = self.nixosModules.wake-proxy;
+      wake-proxy = import ./nix/modules/wake-proxy.nix {inherit self;};
+      keep-awake-target = import ./nix/modules/keep-awake-target.nix {inherit self;};
+    };
   };
 }
