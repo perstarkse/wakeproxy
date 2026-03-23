@@ -18,14 +18,14 @@ in
       unit_name="''${WAKEPROXY_KEEP_AWAKE_TARGET_UNIT:-wakeproxy-keep-awake}"
 
       case "$seconds" in
-        ''\|*[!0-9]*)
+        *[![:digit:]]*)
           echo "duration must be a positive integer" >&2
           exit 1
           ;;
       esac
 
       case "$max_seconds" in
-        ''\|*[!0-9]*)
+        *[![:digit:]]*)
           echo "max duration must be a positive integer" >&2
           exit 1
           ;;
