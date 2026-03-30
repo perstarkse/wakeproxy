@@ -44,6 +44,7 @@
       default = {
         type = "app";
         program = "${self.packages.${system}.default}/bin/wakeproxy";
+        meta = self.packages.${system}.default.meta;
       };
     });
 
