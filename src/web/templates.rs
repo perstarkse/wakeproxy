@@ -5,7 +5,7 @@ use thiserror::Error;
 use tracing::error;
 
 use super::AppState;
-use crate::http::mark_uncacheable;
+use crate::http::{apply_gateway_security_headers, mark_uncacheable};
 use crate::proxy::ProxyError;
 
 #[derive(Debug, Error)]
@@ -119,6 +119,7 @@ fn try_render_template(
         axum::http::header::CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
+    apply_gateway_security_headers(response.headers_mut());
     Ok(response)
 }
 

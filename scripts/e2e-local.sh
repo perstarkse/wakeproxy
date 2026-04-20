@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 TMP_DIR="$(mktemp -d)"
 
 UPSTREAM_PORT="${UPSTREAM_PORT:-6994}"
@@ -79,17 +79,20 @@ if ! curl -fsS "http://127.0.0.1:$GATEWAY_PORT/_health" >/dev/null 2>&1; then
 fi
 
 COOKIE_JAR="$TMP_DIR/cookies.txt"
+BASE_URL="http://127.0.0.1:$GATEWAY_PORT"
+ORIGIN_HEADER="Origin: $BASE_URL"
+REFERER_HEADER="Referer: $BASE_URL/_auth/login"
 
 echo "Test 1/4: unauthenticated request redirects to login"
-status="$(curl -sS -o "$TMP_DIR/unauth-body.txt" -w "%{http_code}" "http://127.0.0.1:$GATEWAY_PORT/demo?x=1")"
+status="$(curl -sS -o "$TMP_DIR/unauth-body.txt" -w "%{http_code}" "$BASE_URL/demo?x=1")"
 assert_eq "303" "$status" "unauthenticated redirect"
 
 echo "Test 2/4: login succeeds and sets cookie"
-status="$(curl -sS -o "$TMP_DIR/login-body.txt" -D "$TMP_DIR/login-headers.txt" -c "$COOKIE_JAR" -w "%{http_code}" -X POST -d "password=$PASSWORD&next=%2Fdemo" "http://127.0.0.1:$GATEWAY_PORT/_auth/login")"
+status="$(curl -sS -o "$TMP_DIR/login-body.txt" -D "$TMP_DIR/login-headers.txt" -c "$COOKIE_JAR" -w "%{http_code}" -X POST -H "$ORIGIN_HEADER" -H "$REFERER_HEADER" -d "password=$PASSWORD&next=%2Fdemo" "$BASE_URL/_auth/login")"
 assert_eq "303" "$status" "login redirect"
 
 echo "Test 3/4: authenticated proxy request reaches upstream"
-status="$(curl -sS -o "$TMP_DIR/proxy-body.txt" -w "%{http_code}" -X POST -b "$COOKIE_JAR" -d "hello-e2e" "http://127.0.0.1:$GATEWAY_PORT/demo?from=e2e")"
+status="$(curl -sS -o "$TMP_DIR/proxy-body.txt" -w "%{http_code}" -X POST -b "$COOKIE_JAR" -d "hello-e2e" "$BASE_URL/demo?from=e2e")"
 assert_eq "200" "$status" "proxied request status"
 
 proxy_body="$(cat "$TMP_DIR/proxy-body.txt")"
@@ -100,10 +103,10 @@ proxy_body="$(cat "$TMP_DIR/proxy-body.txt")"
 [[ "$proxy_body" == *"xfp=http"* ]] || { echo "FAIL: x-forwarded-proto not set"; exit 1; }
 
 echo "Test 4/4: logout invalidates session"
-status="$(curl -sS -o "$TMP_DIR/logout-body.txt" -w "%{http_code}" -X POST -b "$COOKIE_JAR" "http://127.0.0.1:$GATEWAY_PORT/_auth/logout")"
+status="$(curl -sS -o "$TMP_DIR/logout-body.txt" -w "%{http_code}" -X POST -b "$COOKIE_JAR" -H "$ORIGIN_HEADER" -H "$REFERER_HEADER" "$BASE_URL/_auth/logout")"
 assert_eq "303" "$status" "logout redirect"
 
-status="$(curl -sS -o "$TMP_DIR/post-logout-body.txt" -w "%{http_code}" -b "$COOKIE_JAR" "http://127.0.0.1:$GATEWAY_PORT/demo")"
+status="$(curl -sS -o "$TMP_DIR/post-logout-body.txt" -w "%{http_code}" -b "$COOKIE_JAR" "$BASE_URL/demo")"
 assert_eq "303" "$status" "post-logout redirect"
 
 echo "E2E local test passed."

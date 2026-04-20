@@ -6,8 +6,9 @@ use tera::Tera;
 mod common;
 
 use common::{
-    AlwaysReadyProbe, OkWakeSender, build_config, login_and_extract_cookie, spawn_gateway,
-    spawn_gateway_with_templates, spawn_upstream, test_client,
+    AlwaysReadyProbe, OkWakeSender, add_same_origin_headers, build_config,
+    login_and_extract_cookie, spawn_gateway, spawn_gateway_with_templates, spawn_upstream,
+    test_client,
 };
 
 #[tokio::test]
@@ -84,13 +85,16 @@ async fn login_sets_persistent_session_cookie_max_age() {
     let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
     let client = test_client();
 
-    let response = client
-        .post(format!("{}/_auth/login", gateway.url()))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body("password=password-persistent-cookie&next=%2F")
-        .send()
-        .await
-        .expect("response");
+    let response = add_same_origin_headers(
+        client
+            .post(format!("{}/_auth/login", gateway.url()))
+            .header("content-type", "application/x-www-form-urlencoded"),
+        &gateway.url(),
+    )
+    .body("password=password-persistent-cookie&next=%2F")
+    .send()
+    .await
+    .expect("response");
 
     assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
     let set_cookie = response
@@ -181,12 +185,15 @@ async fn logout_clears_session_and_requires_new_login() {
 
     let cookie = login_and_extract_cookie(&client, &gateway.url(), "password-3").await;
 
-    let logout = client
-        .post(format!("{}/_auth/logout", gateway.url()))
-        .header(COOKIE, &cookie)
-        .send()
-        .await
-        .expect("logout response");
+    let logout = add_same_origin_headers(
+        client
+            .post(format!("{}/_auth/logout", gateway.url()))
+            .header(COOKIE, &cookie),
+        &gateway.url(),
+    )
+    .send()
+    .await
+    .expect("logout response");
 
     assert_eq!(logout.status(), reqwest::StatusCode::SEE_OTHER);
     assert!(logout.headers().contains_key(SET_COOKIE));
@@ -210,26 +217,32 @@ async fn spoofed_xff_does_not_bypass_login_lockout_by_default() {
     let client = test_client();
 
     for spoofed_ip in ["8.8.8.8", "1.1.1.1"] {
-        let response = client
-            .post(format!("{}/_auth/login", gateway.url()))
-            .header("content-type", "application/x-www-form-urlencoded")
-            .header("x-forwarded-for", spoofed_ip)
-            .body("password=wrong")
-            .send()
-            .await
-            .expect("login response");
+        let response = add_same_origin_headers(
+            client
+                .post(format!("{}/_auth/login", gateway.url()))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("x-forwarded-for", spoofed_ip),
+            &gateway.url(),
+        )
+        .body("password=wrong")
+        .send()
+        .await
+        .expect("login response");
 
         assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
     }
 
-    let locked = client
-        .post(format!("{}/_auth/login", gateway.url()))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .header("x-forwarded-for", "9.9.9.9")
-        .body("password=password-6")
-        .send()
-        .await
-        .expect("locked response");
+    let locked = add_same_origin_headers(
+        client
+            .post(format!("{}/_auth/login", gateway.url()))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("x-forwarded-for", "9.9.9.9"),
+        &gateway.url(),
+    )
+    .body("password=password-6")
+    .send()
+    .await
+    .expect("locked response");
 
     assert_eq!(locked.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
 }
@@ -244,24 +257,30 @@ async fn trusted_proxy_headers_use_forwarded_ip_for_rate_limit() {
     let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
     let client = test_client();
 
-    let first = client
-        .post(format!("{}/_auth/login", gateway.url()))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .header("x-forwarded-for", "8.8.8.8")
-        .body("password=wrong")
-        .send()
-        .await
-        .expect("first");
+    let first = add_same_origin_headers(
+        client
+            .post(format!("{}/_auth/login", gateway.url()))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("x-forwarded-for", "8.8.8.8"),
+        &gateway.url(),
+    )
+    .body("password=wrong")
+    .send()
+    .await
+    .expect("first");
     assert_eq!(first.status(), reqwest::StatusCode::UNAUTHORIZED);
 
-    let locked = client
-        .post(format!("{}/_auth/login", gateway.url()))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .header("x-forwarded-for", "8.8.8.8")
-        .body("password=password-trusted-forwarded")
-        .send()
-        .await
-        .expect("locked");
+    let locked = add_same_origin_headers(
+        client
+            .post(format!("{}/_auth/login", gateway.url()))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("x-forwarded-for", "8.8.8.8"),
+        &gateway.url(),
+    )
+    .body("password=password-trusted-forwarded")
+    .send()
+    .await
+    .expect("locked");
     assert_eq!(locked.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
 }
 
@@ -275,24 +294,30 @@ async fn malformed_forwarded_ip_falls_back_to_peer_ip() {
     let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
     let client = test_client();
 
-    let first = client
-        .post(format!("{}/_auth/login", gateway.url()))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .header("x-forwarded-for", "not-an-ip")
-        .body("password=wrong")
-        .send()
-        .await
-        .expect("first");
+    let first = add_same_origin_headers(
+        client
+            .post(format!("{}/_auth/login", gateway.url()))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("x-forwarded-for", "not-an-ip"),
+        &gateway.url(),
+    )
+    .body("password=wrong")
+    .send()
+    .await
+    .expect("first");
     assert_eq!(first.status(), reqwest::StatusCode::UNAUTHORIZED);
 
-    let locked = client
-        .post(format!("{}/_auth/login", gateway.url()))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .header("x-forwarded-for", "still-not-an-ip")
-        .body("password=password-forwarded-fallback")
-        .send()
-        .await
-        .expect("locked");
+    let locked = add_same_origin_headers(
+        client
+            .post(format!("{}/_auth/login", gateway.url()))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("x-forwarded-for", "still-not-an-ip"),
+        &gateway.url(),
+    )
+    .body("password=password-forwarded-fallback")
+    .send()
+    .await
+    .expect("locked");
     assert_eq!(locked.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
 }
 
@@ -303,13 +328,16 @@ async fn login_next_parameter_is_sanitized() {
     let gateway = spawn_gateway(config, OkWakeSender, AlwaysReadyProbe).await;
     let client = test_client();
 
-    let response = client
-        .post(format!("{}/_auth/login", gateway.url()))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body("password=password-sanitize&next=%2F%2Fevil.com")
-        .send()
-        .await
-        .expect("response");
+    let response = add_same_origin_headers(
+        client
+            .post(format!("{}/_auth/login", gateway.url()))
+            .header("content-type", "application/x-www-form-urlencoded"),
+        &gateway.url(),
+    )
+    .body("password=password-sanitize&next=%2F%2Fevil.com")
+    .send()
+    .await
+    .expect("response");
 
     assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
     assert_eq!(

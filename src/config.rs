@@ -29,6 +29,7 @@ pub struct Config {
     pub wake_poll_interval_ms: u64,
     pub trust_proxy_headers: bool,
     pub trusted_proxy_ips: Vec<IpAddr>,
+    pub external_origin: Option<String>,
     pub login_max_tracked_ips: usize,
     pub keep_awake_command: Option<PathBuf>,
     pub keep_awake_max_secs: u64,
@@ -126,6 +127,7 @@ impl Config {
         let trust_proxy_headers =
             parse_optional::<bool>(map, "WAKEPROXY_TRUST_PROXY_HEADERS", false)?;
         let trusted_proxy_ips = parse_ip_list(map, "WAKEPROXY_TRUSTED_PROXY_IPS")?;
+        let external_origin = parse_optional_origin(map, "WAKEPROXY_EXTERNAL_ORIGIN")?;
         let login_max_tracked_ips =
             parse_optional::<usize>(map, "WAKEPROXY_LOGIN_MAX_TRACKED_IPS", 10_000)?;
         let keep_awake_command = parse_optional_path(map, "WAKEPROXY_KEEP_AWAKE_COMMAND");
@@ -159,6 +161,7 @@ impl Config {
             wake_poll_interval_ms,
             trust_proxy_headers,
             trusted_proxy_ips,
+            external_origin,
             login_max_tracked_ips,
             keep_awake_command,
             keep_awake_max_secs,
@@ -235,6 +238,57 @@ fn parse_optional_path(map: &HashMap<String, String>, key: &'static str) -> Opti
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+fn parse_optional_origin(
+    map: &HashMap<String, String>,
+    key: &'static str,
+) -> Result<Option<String>, ConfigError> {
+    let Some(raw) = map.get(key).map(|value| value.trim()) else {
+        return Ok(None);
+    };
+    if raw.is_empty() {
+        return Ok(None);
+    }
+
+    let uri = raw
+        .parse::<axum::http::Uri>()
+        .map_err(|_| ConfigError::InvalidValue {
+            name: key,
+            value: raw.to_string(),
+        })?;
+    let Some(scheme) = uri.scheme_str() else {
+        return Err(ConfigError::InvalidValue {
+            name: key,
+            value: raw.to_string(),
+        });
+    };
+    if !matches!(scheme, "http" | "https") {
+        return Err(ConfigError::InvalidValue {
+            name: key,
+            value: raw.to_string(),
+        });
+    }
+
+    let Some(authority) = uri.authority() else {
+        return Err(ConfigError::InvalidValue {
+            name: key,
+            value: raw.to_string(),
+        });
+    };
+
+    if uri.path() != "/"
+        || uri
+            .path_and_query()
+            .is_some_and(|value| value.as_str() != "/")
+    {
+        return Err(ConfigError::InvalidValue {
+            name: key,
+            value: raw.to_string(),
+        });
+    }
+
+    Ok(Some(format!("{scheme}://{}", authority.as_str())))
 }
 
 fn parse_mac(raw: &str) -> Result<[u8; 6], ConfigError> {
@@ -333,6 +387,7 @@ mod tests {
         assert_eq!(config.wake_poll_interval_ms, 2000);
         assert_eq!(config.keep_awake_command, None);
         assert_eq!(config.keep_awake_max_secs, 14_400);
+        assert_eq!(config.external_origin, None);
     }
 
     #[test]
@@ -537,6 +592,55 @@ mod tests {
             Some(std::path::PathBuf::from("/usr/local/bin/keep-awake"))
         );
         assert_eq!(config.keep_awake_max_secs, 7200);
+    }
+
+    #[test]
+    fn config_parses_external_origin() {
+        let mut env = valid_env();
+        env.insert(
+            "WAKEPROXY_EXTERNAL_ORIGIN".to_string(),
+            "https://wake.example.test".to_string(),
+        );
+
+        let config = Config::from_map(&env).expect("config");
+        assert_eq!(
+            config.external_origin.as_deref(),
+            Some("https://wake.example.test")
+        );
+    }
+
+    #[test]
+    fn config_rejects_external_origin_with_path() {
+        let mut env = valid_env();
+        env.insert(
+            "WAKEPROXY_EXTERNAL_ORIGIN".to_string(),
+            "https://wake.example.test/login".to_string(),
+        );
+
+        assert!(matches!(
+            Config::from_map(&env),
+            Err(ConfigError::InvalidValue {
+                name: "WAKEPROXY_EXTERNAL_ORIGIN",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn config_rejects_external_origin_without_scheme() {
+        let mut env = valid_env();
+        env.insert(
+            "WAKEPROXY_EXTERNAL_ORIGIN".to_string(),
+            "wake.example.test".to_string(),
+        );
+
+        assert!(matches!(
+            Config::from_map(&env),
+            Err(ConfigError::InvalidValue {
+                name: "WAKEPROXY_EXTERNAL_ORIGIN",
+                ..
+            })
+        ));
     }
 
     #[test]

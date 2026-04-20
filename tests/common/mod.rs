@@ -14,7 +14,7 @@ use axum::extract::{
     Request,
     ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade},
 };
-use axum::http::header::{HOST, SET_COOKIE};
+use axum::http::header::{HOST, ORIGIN, REFERER, SET_COOKIE};
 use axum::response::IntoResponse;
 use axum::routing::{any, get};
 use axum::{Router, serve};
@@ -153,18 +153,34 @@ pub fn test_client() -> reqwest::Client {
         .expect("reqwest client")
 }
 
+pub fn add_same_origin_headers(
+    request: reqwest::RequestBuilder,
+    base_url: &str,
+) -> reqwest::RequestBuilder {
+    request
+        .header(HOST, "wake.example.test")
+        .header(ORIGIN, "https://wake.example.test")
+        .header(
+            REFERER,
+            format!("https://wake.example.test/_auth/login?from={base_url}"),
+        )
+}
+
 pub async fn login_and_extract_cookie(
     client: &reqwest::Client,
     base_url: &str,
     password: &str,
 ) -> String {
-    let response = client
-        .post(format!("{base_url}/_auth/login"))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(format!("password={password}&next=%2F"))
-        .send()
-        .await
-        .expect("login response");
+    let response = add_same_origin_headers(
+        client
+            .post(format!("{base_url}/_auth/login"))
+            .header("content-type", "application/x-www-form-urlencoded"),
+        base_url,
+    )
+    .body(format!("password={password}&next=%2F"))
+    .send()
+    .await
+    .expect("login response");
 
     assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
 

@@ -8,7 +8,7 @@ use axum::response::IntoResponse;
 use tracing::info;
 
 use super::AppState;
-use super::security::{extract_client_ip, should_trust_proxy};
+use super::security::{extract_client_ip, should_trust_proxy, websocket_origin_allowed};
 use super::templates::app_error_response;
 use crate::http::{mark_uncacheable, redirect_response};
 
@@ -80,6 +80,14 @@ pub(crate) async fn proxy_handler(
 ) -> axum::response::Response {
     let trust_proxy = should_trust_proxy(&state.config, addr);
     let client_ip = extract_client_ip(&state.config, &headers, addr);
+
+    if request.headers().contains_key(axum::http::header::UPGRADE)
+        && !websocket_origin_allowed(&state.config, request.headers())
+    {
+        let mut response = (StatusCode::FORBIDDEN, "Forbidden").into_response();
+        mark_uncacheable(response.headers_mut());
+        return response;
+    }
 
     info!(
         auth = true,

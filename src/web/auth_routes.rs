@@ -37,7 +37,7 @@ pub(crate) async fn login_submit(
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> axum::response::Response {
-    if !is_same_origin_request(&headers) {
+    if !is_same_origin_request(&state.config, &headers, true) {
         warn!("rejected cross-origin login submission");
         return csrf_forbidden_response();
     }
@@ -77,7 +77,7 @@ pub(crate) async fn logout_submit(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if !is_same_origin_request(&headers) {
+    if !is_same_origin_request(&state.config, &headers, true) {
         warn!("rejected cross-origin logout submission");
         return csrf_forbidden_response();
     }

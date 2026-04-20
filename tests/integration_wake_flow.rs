@@ -6,8 +6,8 @@ use axum::http::header::{ACCEPT, COOKIE, LOCATION, USER_AGENT};
 mod common;
 
 use common::{
-    AlwaysReadyProbe, FailingWakeSender, NeverReadyProbe, OkWakeSender, build_config,
-    login_and_extract_cookie, spawn_gateway, spawn_upstream, test_client,
+    AlwaysReadyProbe, FailingWakeSender, NeverReadyProbe, OkWakeSender, add_same_origin_headers,
+    build_config, login_and_extract_cookie, spawn_gateway, spawn_upstream, test_client,
 };
 
 #[tokio::test]
@@ -84,14 +84,17 @@ async fn wake_sender_failure_surfaces_failed_state_in_polling_api() {
 
     let cookie = login_and_extract_cookie(&client, &gateway.url(), "password-5").await;
 
-    let start = client
-        .post(format!("{}/_wake/start", gateway.url()))
-        .header(COOKIE, &cookie)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body("next=%2Fdemo")
-        .send()
-        .await
-        .expect("wake start response");
+    let start = add_same_origin_headers(
+        client
+            .post(format!("{}/_wake/start", gateway.url()))
+            .header(COOKIE, &cookie)
+            .header("content-type", "application/x-www-form-urlencoded"),
+        &gateway.url(),
+    )
+    .body("next=%2Fdemo")
+    .send()
+    .await
+    .expect("wake start response");
     assert_eq!(start.status(), reqwest::StatusCode::SEE_OTHER);
 
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -123,14 +126,17 @@ async fn wake_timeout_surfaces_timed_out_state_in_polling_api() {
     let client = test_client();
     let cookie = login_and_extract_cookie(&client, &gateway.url(), "password-timeout").await;
 
-    let start = client
-        .post(format!("{}/_wake/start", gateway.url()))
-        .header(COOKIE, &cookie)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body("next=%2Fdemo")
-        .send()
-        .await
-        .expect("wake start response");
+    let start = add_same_origin_headers(
+        client
+            .post(format!("{}/_wake/start", gateway.url()))
+            .header(COOKIE, &cookie)
+            .header("content-type", "application/x-www-form-urlencoded"),
+        &gateway.url(),
+    )
+    .body("next=%2Fdemo")
+    .send()
+    .await
+    .expect("wake start response");
     assert_eq!(start.status(), reqwest::StatusCode::SEE_OTHER);
 
     tokio::time::sleep(Duration::from_millis(220)).await;
@@ -235,14 +241,17 @@ async fn wake_start_with_keep_awake_failure_still_redirects_to_wake_page() {
     let cookie =
         login_and_extract_cookie(&client, &gateway.url(), "password-keep-awake-fail").await;
 
-    let start = client
-        .post(format!("{}/_wake/start", gateway.url()))
-        .header(COOKIE, &cookie)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body("next=%2Fdemo&keep_awake_for_secs=3600")
-        .send()
-        .await
-        .expect("wake start response");
+    let start = add_same_origin_headers(
+        client
+            .post(format!("{}/_wake/start", gateway.url()))
+            .header(COOKIE, &cookie)
+            .header("content-type", "application/x-www-form-urlencoded"),
+        &gateway.url(),
+    )
+    .body("next=%2Fdemo")
+    .send()
+    .await
+    .expect("wake start response");
 
     assert_eq!(start.status(), reqwest::StatusCode::SEE_OTHER);
     assert_eq!(
@@ -264,26 +273,32 @@ async fn wake_start_redirects_directly_when_upstream_is_already_ready() {
 
     let cookie = login_and_extract_cookie(&client, &gateway.url(), "password-ready-start").await;
 
-    let first_start = client
-        .post(format!("{}/_wake/start", gateway.url()))
-        .header(COOKIE, &cookie)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body("next=%2Fdemo")
-        .send()
-        .await
-        .expect("first wake start response");
+    let first_start = add_same_origin_headers(
+        client
+            .post(format!("{}/_wake/start", gateway.url()))
+            .header(COOKIE, &cookie)
+            .header("content-type", "application/x-www-form-urlencoded"),
+        &gateway.url(),
+    )
+    .body("next=%2Fdemo")
+    .send()
+    .await
+    .expect("first wake start response");
     assert_eq!(first_start.status(), reqwest::StatusCode::SEE_OTHER);
 
     tokio::time::sleep(Duration::from_millis(60)).await;
 
-    let response = client
-        .post(format!("{}/_wake/start", gateway.url()))
-        .header(COOKIE, &cookie)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body("next=%2Fdemo")
-        .send()
-        .await
-        .expect("wake start response");
+    let response = add_same_origin_headers(
+        client
+            .post(format!("{}/_wake/start", gateway.url()))
+            .header(COOKIE, &cookie)
+            .header("content-type", "application/x-www-form-urlencoded"),
+        &gateway.url(),
+    )
+    .body("next=%2Fdemo")
+    .send()
+    .await
+    .expect("wake start response");
 
     assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
     assert_eq!(

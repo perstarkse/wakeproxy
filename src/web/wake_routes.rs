@@ -129,7 +129,7 @@ pub(crate) async fn wake_start_submit(
     headers: HeaderMap,
     Form(form): Form<WakeStartForm>,
 ) -> axum::response::Response {
-    if !super::security::is_same_origin_request(&headers) {
+    if !super::security::is_same_origin_request(&state.config, &headers, true) {
         warn!("rejected cross-origin wake-start submission");
         return csrf_forbidden_response();
     }

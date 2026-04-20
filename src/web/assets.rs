@@ -3,6 +3,8 @@ use axum::http::header::CACHE_CONTROL;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
+use crate::http::apply_gateway_security_headers;
+
 const PWA_ICON_192_PNG: &[u8] = include_bytes!("../../assets/icons/icon-192.png");
 const PWA_ICON_512_PNG: &[u8] = include_bytes!("../../assets/icons/icon-512.png");
 const PWA_ICON_MASKABLE_512_PNG: &[u8] = include_bytes!("../../assets/icons/icon-maskable-512.png");
@@ -150,6 +152,7 @@ pub(crate) async fn web_manifest() -> Response {
         CACHE_CONTROL,
         HeaderValue::from_static("public, max-age=3600"),
     );
+    apply_gateway_security_headers(response.headers_mut());
     response
 }
 
@@ -165,6 +168,7 @@ pub(crate) async fn service_worker() -> Response {
     response
         .headers_mut()
         .insert("service-worker-allowed", HeaderValue::from_static("/"));
+    apply_gateway_security_headers(response.headers_mut());
     response
 }
 
@@ -185,7 +189,9 @@ pub(crate) async fn apple_touch_icon() -> Response {
 }
 
 pub(crate) async fn gateway_health() -> impl IntoResponse {
-    (axum::http::StatusCode::OK, "ok")
+    let mut response = (axum::http::StatusCode::OK, "ok").into_response();
+    apply_gateway_security_headers(response.headers_mut());
+    response
 }
 
 fn png_asset_response(bytes: &'static [u8]) -> Response {
@@ -198,5 +204,6 @@ fn png_asset_response(bytes: &'static [u8]) -> Response {
         CACHE_CONTROL,
         HeaderValue::from_static("public, max-age=604800, immutable"),
     );
+    apply_gateway_security_headers(response.headers_mut());
     response
 }

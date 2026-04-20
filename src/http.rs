@@ -3,6 +3,25 @@ use axum::http::header::{ACCEPT, CACHE_CONTROL, EXPIRES, PRAGMA, USER_AGENT};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 
+pub(crate) fn apply_gateway_security_headers(headers: &mut HeaderMap) {
+    headers.insert(
+        "content-security-policy",
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        ),
+    );
+    headers.insert("referrer-policy", HeaderValue::from_static("same-origin"));
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    headers.insert(
+        "permissions-policy",
+        HeaderValue::from_static("accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()"),
+    );
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+}
+
 pub(crate) fn mark_uncacheable(headers: &mut HeaderMap) {
     headers.insert(
         CACHE_CONTROL,
@@ -66,6 +85,7 @@ pub(crate) fn soft_redirect_response(target: &str) -> Response {
         axum::http::header::CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
+    apply_gateway_security_headers(response.headers_mut());
     mark_uncacheable(response.headers_mut());
     response
 }

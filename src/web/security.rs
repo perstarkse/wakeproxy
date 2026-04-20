@@ -7,6 +7,12 @@ use axum::response::IntoResponse;
 use crate::config::Config;
 use crate::http::mark_uncacheable;
 
+#[derive(Debug, Clone)]
+pub(crate) struct OriginAuthority {
+    pub(crate) host: String,
+    pub(crate) port: Option<u16>,
+}
+
 pub(crate) fn extract_client_ip(
     config: &Config,
     headers: &HeaderMap,
@@ -49,7 +55,23 @@ pub(crate) fn csrf_forbidden_response() -> axum::response::Response {
     response
 }
 
-pub(crate) fn is_same_origin_request(headers: &HeaderMap) -> bool {
+pub(crate) fn expected_origin_authority(
+    config: &Config,
+    headers: &HeaderMap,
+) -> Option<OriginAuthority> {
+    if let Some(origin) = config.external_origin.as_deref() {
+        return parse_origin_authority(origin);
+    }
+
+    let host = headers.get(HOST).and_then(|value| value.to_str().ok())?;
+    parse_host_authority(host)
+}
+
+pub(crate) fn is_same_origin_request(
+    config: &Config,
+    headers: &HeaderMap,
+    require_explicit_origin: bool,
+) -> bool {
     if let Some(site) = headers
         .get("sec-fetch-site")
         .and_then(|value| value.to_str().ok())
@@ -59,40 +81,63 @@ pub(crate) fn is_same_origin_request(headers: &HeaderMap) -> bool {
         return false;
     }
 
-    if headers.get(ORIGIN).is_none() && headers.get(REFERER).is_none() {
-        return true;
+    if require_explicit_origin && headers.get(ORIGIN).is_none() && headers.get(REFERER).is_none() {
+        return false;
     }
 
-    let Some(host) = headers.get(HOST).and_then(|value| value.to_str().ok()) else {
-        return false;
-    };
-    let Some((host_name, host_port)) = parse_host_authority(host) else {
+    let Some(authority) = expected_origin_authority(config, headers) else {
         return false;
     };
 
     if let Some(origin) = headers.get(ORIGIN).and_then(|value| value.to_str().ok()) {
-        return matches_authority(origin, &host_name, host_port);
+        return matches_authority(origin, &authority);
     }
 
     if let Some(referer) = headers.get(REFERER).and_then(|value| value.to_str().ok()) {
-        return matches_authority(referer, &host_name, host_port);
+        return matches_authority(referer, &authority);
     }
 
-    false
+    !require_explicit_origin
 }
 
-fn parse_host_authority(value: &str) -> Option<(String, Option<u16>)> {
+pub(crate) fn websocket_origin_allowed(config: &Config, headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(ORIGIN).and_then(|value| value.to_str().ok()) else {
+        return true;
+    };
+    let Some(authority) = expected_origin_authority(config, headers) else {
+        return false;
+    };
+    matches_authority(origin, &authority)
+}
+
+fn parse_host_authority(value: &str) -> Option<OriginAuthority> {
     let authority = value.parse::<axum::http::uri::Authority>().ok()?;
-    Some((
-        authority
+    Some(OriginAuthority {
+        host: authority
             .host()
             .trim_matches(&['[', ']'][..])
             .to_ascii_lowercase(),
-        authority.port_u16(),
-    ))
+        port: authority.port_u16(),
+    })
 }
 
-fn matches_authority(value: &str, host_name: &str, host_port: Option<u16>) -> bool {
+fn parse_origin_authority(value: &str) -> Option<OriginAuthority> {
+    let uri = value.parse::<axum::http::Uri>().ok()?;
+    let authority = uri.authority()?;
+    Some(OriginAuthority {
+        host: authority
+            .host()
+            .trim_matches(&['[', ']'][..])
+            .to_ascii_lowercase(),
+        port: authority.port_u16().or_else(|| match uri.scheme_str() {
+            Some("http") => Some(80),
+            Some("https") => Some(443),
+            _ => None,
+        }),
+    })
+}
+
+fn matches_authority(value: &str, expected: &OriginAuthority) -> bool {
     let uri = value.parse::<axum::http::Uri>().ok();
     let Some(uri) = uri else {
         return false;
@@ -105,7 +150,7 @@ fn matches_authority(value: &str, host_name: &str, host_port: Option<u16>) -> bo
         .host()
         .trim_matches(&['[', ']'][..])
         .to_ascii_lowercase();
-    if origin_host != host_name {
+    if origin_host != expected.host {
         return false;
     }
 
@@ -115,7 +160,7 @@ fn matches_authority(value: &str, host_name: &str, host_port: Option<u16>) -> bo
         _ => None,
     });
 
-    match host_port {
+    match expected.port {
         Some(port) => origin_port == Some(port),
         None => origin_port.is_none() || origin_port == Some(80) || origin_port == Some(443),
     }

@@ -111,10 +111,14 @@ mod tests {
         ACCEPT, CACHE_CONTROL, CONTENT_TYPE, HOST, LOCATION, ORIGIN, REFERER, USER_AGENT,
     };
     use axum::http::{HeaderMap, HeaderValue, StatusCode};
+    use axum::response::IntoResponse;
 
-    use super::assets::{pwa_icon_192, service_worker, web_manifest};
+    use super::assets::{gateway_health, pwa_icon_192, service_worker, web_manifest};
     use super::load_templates;
-    use super::security::{extract_client_ip, is_same_origin_request, sanitize_next};
+    use super::security::{
+        expected_origin_authority, extract_client_ip, is_same_origin_request, sanitize_next,
+        websocket_origin_allowed,
+    };
     use super::wake_routes::{
         preview_auto_from_label, wake_retryable, wake_state_from_label, wake_state_label,
         wake_status_message,
@@ -157,6 +161,12 @@ mod tests {
         );
 
         Config::from_map(&map).expect("config")
+    }
+
+    fn trusted_proxy_config_with_external_origin() -> Config {
+        let mut config = trusted_proxy_config();
+        config.external_origin = Some("https://wake.example.test".to_string());
+        config
     }
 
     #[test]
@@ -400,18 +410,19 @@ mod tests {
 
     #[test]
     fn same_origin_request_accepts_matching_origin_and_rejects_cross_site() {
+        let config = trusted_proxy_config();
         let mut headers = HeaderMap::new();
         headers.insert(HOST, HeaderValue::from_static("gateway.local"));
         headers.insert(ORIGIN, HeaderValue::from_static("https://gateway.local"));
-        assert!(is_same_origin_request(&headers));
+        assert!(is_same_origin_request(&config, &headers, true));
 
         headers.insert(ORIGIN, HeaderValue::from_static("https://evil.example"));
-        assert!(!is_same_origin_request(&headers));
+        assert!(!is_same_origin_request(&config, &headers, true));
 
         let mut sec_fetch = HeaderMap::new();
         sec_fetch.insert(HOST, HeaderValue::from_static("gateway.local"));
         sec_fetch.insert("sec-fetch-site", HeaderValue::from_static("cross-site"));
-        assert!(!is_same_origin_request(&sec_fetch));
+        assert!(!is_same_origin_request(&config, &sec_fetch, true));
 
         let mut legacy = HeaderMap::new();
         legacy.insert(HOST, HeaderValue::from_static("gateway.local"));
@@ -419,7 +430,11 @@ mod tests {
             REFERER,
             HeaderValue::from_static("https://gateway.local/login"),
         );
-        assert!(is_same_origin_request(&legacy));
+        assert!(is_same_origin_request(&config, &legacy, true));
+
+        let missing = HeaderMap::new();
+        assert!(!is_same_origin_request(&config, &missing, true));
+        assert!(!is_same_origin_request(&config, &missing, false));
     }
 
     #[test]
@@ -436,6 +451,67 @@ mod tests {
         assert_eq!(
             extract_client_ip(&config, &headers, connect),
             "203.0.113.7".parse::<std::net::IpAddr>().expect("ip")
+        );
+    }
+
+    #[test]
+    fn external_origin_overrides_host_for_origin_checks() {
+        let config = trusted_proxy_config_with_external_origin();
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("spoofed.internal"));
+        headers.insert(
+            ORIGIN,
+            HeaderValue::from_static("https://wake.example.test"),
+        );
+
+        let authority = expected_origin_authority(&config, &headers).expect("authority");
+        assert!(is_same_origin_request(&config, &headers, true));
+        assert_eq!(authority.host, "wake.example.test");
+        assert_eq!(authority.port, Some(443));
+    }
+
+    #[test]
+    fn websocket_origin_check_uses_same_expected_origin() {
+        let config = trusted_proxy_config_with_external_origin();
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("wake.example.test"));
+        headers.insert(
+            ORIGIN,
+            HeaderValue::from_static("https://wake.example.test"),
+        );
+        assert!(websocket_origin_allowed(&config, &headers));
+
+        headers.insert(ORIGIN, HeaderValue::from_static("https://evil.example"));
+        assert!(!websocket_origin_allowed(&config, &headers));
+    }
+
+    #[tokio::test]
+    async fn gateway_responses_include_security_headers() {
+        let response = web_manifest().await;
+        assert_eq!(
+            response
+                .headers()
+                .get("content-security-policy")
+                .and_then(|value| value.to_str().ok()),
+            Some(
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+            )
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-frame-options")
+                .and_then(|value| value.to_str().ok()),
+            Some("DENY")
+        );
+
+        let health = gateway_health().await.into_response();
+        assert_eq!(
+            health
+                .headers()
+                .get("x-content-type-options")
+                .and_then(|value| value.to_str().ok()),
+            Some("nosniff")
         );
     }
 }

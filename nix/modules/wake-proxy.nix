@@ -10,6 +10,23 @@
     then "ip6 saddr ${source} tcp dport ${toString cfg.port} accept"
     else "ip saddr ${source} tcp dport ${toString cfg.port} accept")
   cfg.allowedFirewallSources;
+  mkFirewallExtraCommands = port: sources: let
+    allowRules =
+      map (
+        source:
+          if builtins.match ".*:.*" source != null
+          then "${pkgs.iptables}/bin/ip6tables -A nixos-fw -p tcp -s ${source} --dport ${toString port} -j ACCEPT"
+          else "${pkgs.iptables}/bin/iptables -A nixos-fw -p tcp -s ${source} --dport ${toString port} -j ACCEPT"
+      )
+      sources;
+  in
+    lib.concatStringsSep "\n" (
+      allowRules
+      ++ [
+        "${pkgs.iptables}/bin/iptables -A nixos-fw -p tcp --dport ${toString port} -j DROP"
+        "${pkgs.iptables}/bin/ip6tables -A nixos-fw -p tcp --dport ${toString port} -j DROP"
+      ]
+    );
 in {
   imports = [
     (import ./keep-awake-target.nix {inherit self;})
@@ -154,6 +171,13 @@ in {
       description = "Peer IPs allowed to supply trusted X-Forwarded-* headers.";
     };
 
+    externalOrigin = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "https://wake.example.com";
+      description = "Canonical external origin used for CSRF and websocket origin validation.";
+    };
+
     passwordHashFile = lib.mkOption {
       type = lib.types.path;
       description = "File containing WAKEPROXY_PASSWORD_HASH and WAKEPROXY_SESSION_SECRET.";
@@ -216,7 +240,7 @@ in {
           "WAKEPROXY_LOGIN_MAX_TRACKED_IPS=${toString cfg.loginMaxTrackedIps}"
           "WAKEPROXY_TRUST_PROXY_HEADERS=${lib.boolToString cfg.trustProxyHeaders}"
           "WAKEPROXY_TRUSTED_PROXY_IPS=${lib.concatStringsSep "," cfg.trustedProxyIps}"
-        ];
+        ] ++ lib.optional (cfg.externalOrigin != null) "WAKEPROXY_EXTERNAL_ORIGIN=${cfg.externalOrigin}";
         EnvironmentFile = [cfg.passwordHashFile];
 
         NoNewPrivileges = true;
@@ -245,6 +269,9 @@ in {
       extraInputRules = lib.mkIf (cfg.allowedFirewallSources != []) (lib.mkAfter ''
         ${firewallSourceRules}
         tcp dport ${toString cfg.port} drop
+      '');
+      extraCommands = lib.mkIf (!config.networking.nftables.enable && cfg.allowedFirewallSources != []) (lib.mkAfter ''
+        ${mkFirewallExtraCommands cfg.port cfg.allowedFirewallSources}
       '');
     };
   };

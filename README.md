@@ -69,16 +69,18 @@ cargo run
 - `WAKEPROXY_KEEP_AWAKE_MAX_SECS` (default: `14400`)
 - `WAKEPROXY_TRUST_PROXY_HEADERS` (default: `false`)
 - `WAKEPROXY_TRUSTED_PROXY_IPS` (default: empty, comma-separated IPs)
+- `WAKEPROXY_EXTERNAL_ORIGIN` (recommended behind reverse proxies; exact external `http://` or `https://` origin, no path)
 
 ## Security assumptions and hardening
 
 - Keep `WAKEPROXY_TRUST_PROXY_HEADERS=false` unless the gateway is behind a known reverse proxy.
 - If proxy header trust is enabled, set `WAKEPROXY_TRUSTED_PROXY_IPS` to only your proxy hops and ensure your edge overwrites/sanitizes incoming `X-Forwarded-*` headers from clients.
-- CSRF protections for `POST /_auth/login`, `POST /_auth/logout`, and `POST /_wake/start` rely on same-origin `Origin`/`Referer` validation against `Host`; keep `Host` handling consistent through your proxy.
+- Set `WAKEPROXY_EXTERNAL_ORIGIN` behind reverse proxies so CSRF and websocket origin checks do not depend on incoming `Host`.
 - The gateway strips its own `wakeproxy_session` cookie before forwarding upstream requests, so upstream services do not receive gateway auth sessions.
 - iOS soft redirects only run for safe targets (relative paths or `http/https` URLs).
 - Session state is memory-backed by design; restarting the process clears active sessions and login-attempt tracking.
-- Prefer a randomly generated session secret of at least 32 bytes, even though the minimum accepted length is lower.
+- Use a randomly generated session secret of at least 32 bytes.
+- Websocket upgrades with an `Origin` header are accepted only when the origin matches the configured external origin or request host.
 
 ## Readiness model
 
