@@ -48,6 +48,17 @@
       };
     });
 
+    checks = forAllSystems (system: let
+      pkgs = import nixpkgs {inherit system;};
+    in {
+      keep-awake-target = import ./nix/tests/keep-awake-target.nix {
+        inherit self pkgs;
+      };
+      deployment-e2e = import ./nix/tests/deployment-e2e.nix {
+        inherit self pkgs;
+      };
+    });
+
     nixosModules = {
       default = self.nixosModules.wake-proxy;
       wake-proxy = import ./nix/modules/wake-proxy.nix {inherit self;};

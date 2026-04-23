@@ -65,7 +65,7 @@ cargo run
 - `WAKEPROXY_LOGIN_WINDOW_SECS` (default: `300`)
 - `WAKEPROXY_LOGIN_MAX_TRACKED_IPS` (default: `10000`)
 - `WAKEPROXY_WAKE_POLL_INTERVAL_MS` (default: `2000`)
-- `WAKEPROXY_KEEP_AWAKE_COMMAND` (optional helper command receiving requested seconds as argv[1])
+- `WAKEPROXY_KEEP_AWAKE_COMMAND` (optional helper command receiving requested seconds as argv[1] after the upstream is ready)
 - `WAKEPROXY_KEEP_AWAKE_MAX_SECS` (default: `14400`)
 - `WAKEPROXY_TRUST_PROXY_HEADERS` (default: `false`)
 - `WAKEPROXY_TRUSTED_PROXY_IPS` (default: empty, comma-separated IPs)

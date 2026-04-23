@@ -12,6 +12,8 @@ use super::templates::render_template;
 use crate::http::{mark_uncacheable, redirect_response};
 use crate::wake::{WakeStartResult, WakeState};
 
+const DEFAULT_KEEP_AWAKE_FOR_SECS: u64 = 900;
+
 #[derive(serde::Deserialize)]
 pub(crate) struct WakeQuery {
     pub(crate) next: Option<String>,
@@ -137,6 +139,7 @@ pub(crate) async fn wake_start_submit(
     let next = sanitize_next(form.next.as_deref()).unwrap_or_else(|| "/".to_string());
     let keep_awake_for = form
         .keep_awake_for_secs
+        .or(Some(DEFAULT_KEEP_AWAKE_FOR_SECS))
         .filter(|seconds| *seconds > 0)
         .map(Duration::from_secs);
 

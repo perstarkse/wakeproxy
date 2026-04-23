@@ -70,6 +70,9 @@ async fn wake_page_renders_status_when_upstream_is_sleeping() {
     assert!(body.contains("window.location.reload()"));
     assert!(body.contains("Wake and connect"));
     assert!(body.contains("name=\"keep_awake_for_secs\""));
+    assert!(body.contains("Defaults to 15 minutes"));
+    assert!(body.contains("value=\"900\" selected"));
+    assert!(body.contains("15 minutes"));
     assert!(body.contains("30 minutes"));
     assert!(body.contains("1 hour"));
 }
@@ -91,7 +94,7 @@ async fn wake_sender_failure_surfaces_failed_state_in_polling_api() {
             .header("content-type", "application/x-www-form-urlencoded"),
         &gateway.url(),
     )
-    .body("next=%2Fdemo")
+    .body("next=%2Fdemo&keep_awake_for_secs=900")
     .send()
     .await
     .expect("wake start response");
@@ -133,7 +136,7 @@ async fn wake_timeout_surfaces_timed_out_state_in_polling_api() {
             .header("content-type", "application/x-www-form-urlencoded"),
         &gateway.url(),
     )
-    .body("next=%2Fdemo")
+    .body("next=%2Fdemo&keep_awake_for_secs=900")
     .send()
     .await
     .expect("wake start response");
@@ -248,7 +251,7 @@ async fn wake_start_with_keep_awake_failure_still_redirects_to_wake_page() {
             .header("content-type", "application/x-www-form-urlencoded"),
         &gateway.url(),
     )
-    .body("next=%2Fdemo")
+    .body("next=%2Fdemo&keep_awake_for_secs=900")
     .send()
     .await
     .expect("wake start response");
@@ -280,7 +283,7 @@ async fn wake_start_redirects_directly_when_upstream_is_already_ready() {
             .header("content-type", "application/x-www-form-urlencoded"),
         &gateway.url(),
     )
-    .body("next=%2Fdemo")
+    .body("next=%2Fdemo&keep_awake_for_secs=900")
     .send()
     .await
     .expect("first wake start response");
@@ -295,7 +298,7 @@ async fn wake_start_redirects_directly_when_upstream_is_already_ready() {
             .header("content-type", "application/x-www-form-urlencoded"),
         &gateway.url(),
     )
-    .body("next=%2Fdemo")
+    .body("next=%2Fdemo&keep_awake_for_secs=900")
     .send()
     .await
     .expect("wake start response");
