@@ -13,6 +13,7 @@ use crate::http::{mark_uncacheable, redirect_response};
 use crate::wake::{WakeStartResult, WakeState};
 
 const DEFAULT_KEEP_AWAKE_FOR_SECS: u64 = 900;
+const KEEP_AWAKE_OPTION_SECS: [u64; 4] = [900, 1800, 3600, 14_400];
 
 #[derive(serde::Deserialize)]
 pub(crate) struct WakeQuery {
@@ -60,6 +61,8 @@ pub(crate) async fn wake_page(
     let context = wake_context(
         &next,
         state.config.wake_poll_interval_ms,
+        state.config.keep_awake_command.is_some(),
+        state.config.keep_awake_max_secs,
         snapshot.state,
         snapshot.cycle_id,
         snapshot.reason.as_deref().unwrap_or(""),
@@ -113,6 +116,8 @@ pub(crate) async fn wake_preview_page(
         let context = wake_context(
             &next,
             1200,
+            true,
+            14_400,
             preview_state,
             Some(query.cycle_id.unwrap_or(4242)),
             &reason,
@@ -177,6 +182,8 @@ pub(crate) async fn wake_poll(
 fn wake_context(
     next: &str,
     poll_interval_ms: u64,
+    keep_awake_enabled: bool,
+    keep_awake_max_secs: u64,
     state: WakeState,
     cycle_id: Option<u64>,
     reason: &str,
@@ -184,8 +191,36 @@ fn wake_context(
     preview_auto: bool,
 ) -> Context {
     let mut context = Context::new();
+    let keep_awake_default_secs = DEFAULT_KEEP_AWAKE_FOR_SECS.min(keep_awake_max_secs);
+    let mut keep_awake_option_secs = KEEP_AWAKE_OPTION_SECS
+        .into_iter()
+        .filter(|seconds| *seconds <= keep_awake_max_secs)
+        .collect::<Vec<_>>();
+    if !keep_awake_option_secs.contains(&keep_awake_default_secs) {
+        keep_awake_option_secs.push(keep_awake_default_secs);
+    }
+    if !keep_awake_option_secs.contains(&keep_awake_max_secs) {
+        keep_awake_option_secs.push(keep_awake_max_secs);
+    }
+    keep_awake_option_secs.sort_unstable();
+
+    let keep_awake_options = keep_awake_option_secs
+        .into_iter()
+        .map(|seconds| KeepAwakeOption {
+            seconds,
+            label: format_duration_label(seconds),
+            selected: seconds == keep_awake_default_secs,
+        })
+        .collect::<Vec<_>>();
+    let keep_awake_default_label = format_duration_label(keep_awake_default_secs);
+    let keep_awake_max_label = format_duration_label(keep_awake_max_secs);
+
     context.insert("next", next);
     context.insert("poll_interval_ms", &poll_interval_ms);
+    context.insert("keep_awake_enabled", &keep_awake_enabled);
+    context.insert("keep_awake_options", &keep_awake_options);
+    context.insert("keep_awake_default_label", &keep_awake_default_label);
+    context.insert("keep_awake_max_label", &keep_awake_max_label);
     context.insert("state", wake_state_label(state));
     context.insert("status_message", wake_status_message(state));
     context.insert("retryable", &wake_retryable(state));
@@ -195,6 +230,35 @@ fn wake_context(
     context.insert("preview_mode", &preview_mode);
     context.insert("preview_auto", &preview_auto);
     context
+}
+
+#[derive(serde::Serialize)]
+struct KeepAwakeOption {
+    seconds: u64,
+    label: String,
+    selected: bool,
+}
+
+fn format_duration_label(seconds: u64) -> String {
+    if seconds % 3600 == 0 {
+        let hours = seconds / 3600;
+        if hours == 1 {
+            "1 hour".to_string()
+        } else {
+            format!("{hours} hours")
+        }
+    } else if seconds % 60 == 0 {
+        let minutes = seconds / 60;
+        if minutes == 1 {
+            "1 minute".to_string()
+        } else {
+            format!("{minutes} minutes")
+        }
+    } else if seconds == 1 {
+        "1 second".to_string()
+    } else {
+        format!("{seconds} seconds")
+    }
 }
 
 pub(crate) fn wake_state_label(state: WakeState) -> &'static str {

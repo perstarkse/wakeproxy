@@ -57,6 +57,12 @@
       deployment-e2e = import ./nix/tests/deployment-e2e.nix {
         inherit self pkgs;
       };
+      auto-suspend-interaction = import ./nix/tests/auto-suspend-interaction.nix {
+        inherit self pkgs;
+      };
+      keep-awake-debug = import ./nix/tests/keep-awake-debug.nix {
+        inherit self pkgs;
+      };
     });
 
     nixosModules = {

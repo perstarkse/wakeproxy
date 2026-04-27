@@ -179,6 +179,7 @@ struct Inner {
     last_ready_cycle_id: Option<u64>,
     last_outcome: Option<WakeOutcome>,
     pending_keep_awake: Option<Duration>,
+    keep_awake_until: Option<Instant>,
 }
 
 struct WakeCycle {
@@ -216,6 +217,7 @@ impl WakeCoordinator {
                 last_ready_cycle_id: None,
                 last_outcome: None,
                 pending_keep_awake: None,
+                keep_awake_until: None,
             })),
         }
     }
@@ -230,8 +232,11 @@ impl WakeCoordinator {
     }
 
     pub async fn start_wake(&self, keep_awake_for: Option<Duration>) -> WakeStartResult {
+        let keep_awake_for =
+            keep_awake_for.map(|duration| duration.min(self.config.keep_awake_max));
+
         if let Some(cycle_id) = self.check_ready_cache().await {
-            self.start_keep_awake(keep_awake_for);
+            self.start_keep_awake_if_extending(keep_awake_for).await;
             return WakeStartResult::AlreadyReady {
                 cycle_id: Some(cycle_id),
             };
@@ -239,7 +244,7 @@ impl WakeCoordinator {
 
         {
             let mut inner = self.inner.lock().await;
-            inner.pending_keep_awake = keep_awake_for;
+            inner.pending_keep_awake = max_duration(inner.pending_keep_awake, keep_awake_for);
         }
 
         let (cycle, started_new) = self.get_or_start_cycle().await;
@@ -317,20 +322,49 @@ impl WakeCoordinator {
         None
     }
 
-    fn start_keep_awake(&self, keep_awake_for: Option<Duration>) {
+    async fn start_keep_awake_if_extending(&self, keep_awake_for: Option<Duration>) {
         let Some(duration) = keep_awake_for else {
             return;
         };
 
-        let bounded_duration = duration.min(self.config.keep_awake_max);
+        let now = Instant::now();
+        let requested_until = now + duration;
+        let previous_until = {
+            let mut inner = self.inner.lock().await;
+            if inner
+                .keep_awake_until
+                .is_some_and(|until| until >= requested_until)
+            {
+                return;
+            }
+            let previous_until = inner.keep_awake_until;
+            inner.keep_awake_until = Some(requested_until);
+            previous_until
+        };
+
+        self.start_keep_awake(duration, requested_until, previous_until);
+    }
+
+    fn start_keep_awake(
+        &self,
+        duration: Duration,
+        requested_until: Instant,
+        previous_until: Option<Instant>,
+    ) {
         let keep_awake = self.keep_awake.clone();
+        let inner = self.inner.clone();
         tokio::spawn(async move {
-            if let Err(error) = keep_awake.keep_awake(bounded_duration).await {
+            if let Err(error) = keep_awake.keep_awake(duration).await {
                 warn!(
                     ?error,
-                    seconds = bounded_duration.as_secs(),
+                    seconds = duration.as_secs(),
                     "keep-awake request failed"
                 );
+
+                let mut inner = inner.lock().await;
+                if inner.keep_awake_until == Some(requested_until) {
+                    inner.keep_awake_until = previous_until;
+                }
             }
         });
     }
@@ -370,6 +404,7 @@ impl WakeCoordinator {
 
         inner.current_cycle = Some(cycle.clone());
         inner.last_outcome = None;
+        inner.keep_awake_until = None;
         cycle
     }
 
@@ -478,13 +513,21 @@ impl WakeCoordinator {
             let mut inner = self.inner.lock().await;
             inner.pending_keep_awake.take()
         };
-        self.start_keep_awake(pending_keep_awake);
+        self.start_keep_awake_if_extending(pending_keep_awake).await;
     }
 
     async fn mark_direct_ready(&self) {
         let mut inner = self.inner.lock().await;
         inner.last_ready_at = Some(Instant::now());
         inner.last_outcome = None;
+    }
+}
+
+fn max_duration(left: Option<Duration>, right: Option<Duration>) -> Option<Duration> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(duration), None) | (None, Some(duration)) => Some(duration),
+        (None, None) => None,
     }
 }
 
@@ -913,6 +956,107 @@ mod tests {
         let snapshot = coordinator.status_snapshot().await;
         assert_eq!(snapshot.state, WakeState::Sleeping);
         assert!(!snapshot.ready);
+    }
+
+    #[tokio::test]
+    async fn start_wake_keeps_longest_pending_keep_awake_duration() {
+        let durations = Arc::new(Mutex::new(Vec::new()));
+        let coordinator = WakeCoordinator::new(
+            WakeConfig {
+                wake_timeout: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
+                ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
+            },
+            Arc::new(MockWakeSender {
+                sends: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(MockProbe {
+                checks: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(MockKeepAwakeRunner {
+                durations: durations.clone(),
+                fail: false,
+            }),
+        );
+
+        let _ = coordinator
+            .start_wake(Some(Duration::from_secs(3_600)))
+            .await;
+        let _ = coordinator.start_wake(Some(Duration::from_secs(900))).await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        let seen = durations.lock().await.clone();
+        assert_eq!(seen, vec![Duration::from_secs(3_600)]);
+    }
+
+    #[tokio::test]
+    async fn start_wake_ignores_shorter_ready_cache_keep_awake_request() {
+        let durations = Arc::new(Mutex::new(Vec::new()));
+        let coordinator = WakeCoordinator::new(
+            WakeConfig {
+                wake_timeout: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
+                ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
+            },
+            Arc::new(MockWakeSender {
+                sends: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(MockProbe {
+                checks: Arc::new(AtomicUsize::new(10)),
+            }),
+            Arc::new(MockKeepAwakeRunner {
+                durations: durations.clone(),
+                fail: false,
+            }),
+        );
+
+        let _ = coordinator
+            .start_wake(Some(Duration::from_secs(3_600)))
+            .await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let _ = coordinator.start_wake(Some(Duration::from_secs(900))).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let seen = durations.lock().await.clone();
+        assert_eq!(seen, vec![Duration::from_secs(3_600)]);
+    }
+
+    #[tokio::test]
+    async fn start_wake_extends_ready_cache_keep_awake_request() {
+        let durations = Arc::new(Mutex::new(Vec::new()));
+        let coordinator = WakeCoordinator::new(
+            WakeConfig {
+                wake_timeout: Duration::from_secs(1),
+                poll_interval: Duration::from_millis(10),
+                ready_cache_ttl: Duration::from_secs(1),
+                keep_awake_max: Duration::from_secs(14_400),
+            },
+            Arc::new(MockWakeSender {
+                sends: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(MockProbe {
+                checks: Arc::new(AtomicUsize::new(10)),
+            }),
+            Arc::new(MockKeepAwakeRunner {
+                durations: durations.clone(),
+                fail: false,
+            }),
+        );
+
+        let _ = coordinator.start_wake(Some(Duration::from_secs(900))).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let _ = coordinator
+            .start_wake(Some(Duration::from_secs(3_600)))
+            .await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let seen = durations.lock().await.clone();
+        assert_eq!(
+            seen,
+            vec![Duration::from_secs(900), Duration::from_secs(3_600)]
+        );
     }
 
     #[tokio::test]

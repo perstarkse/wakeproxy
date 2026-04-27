@@ -203,6 +203,15 @@
     background: #fff;
   }
 
+  .keep-awake-disabled {
+    margin: 0;
+    padding: 0.7rem 0.78rem;
+    border-radius: 12px;
+    border: 1px solid #e3dcc8;
+    background: #fff8e8;
+    color: #6c5730;
+  }
+
   .progress-label-short {
     display: none;
   }
@@ -661,18 +670,21 @@
 
   <form method="post" action="/_wake/start" class="actions">
     <input type="hidden" name="next" value="{{ next }}" />
+    {% if keep_awake_enabled %}
     <label class="keep-awake-field" for="keep-awake-for-secs">
       <span class="keep-awake-label">
         <span>Keep awake</span>
-        <span class="keep-awake-hint">Defaults to 15 minutes</span>
+        <span class="keep-awake-hint">Defaults to {{ keep_awake_default_label }}. Max {{ keep_awake_max_label }}.</span>
       </span>
       <select id="keep-awake-for-secs" name="keep_awake_for_secs">
-        <option value="900" selected>15 minutes</option>
-        <option value="1800">30 minutes</option>
-        <option value="3600">1 hour</option>
-        <option value="14400">4 hours</option>
+        {% for option in keep_awake_options %}
+        <option value="{{ option.seconds }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+        {% endfor %}
       </select>
     </label>
+    {% else %}
+    <p class="keep-awake-disabled">Keep-awake is not configured on this gateway; wakeproxy can wake the target but cannot prevent its own suspend timer.</p>
+    {% endif %}
     <button type="submit" data-wake-action>{% if retryable %}Wake and connect{% else %}Wake in progress...{% endif %}</button>
     <a class="button-link secondary" href="/_auth/login">Back to login</a>
   </form>

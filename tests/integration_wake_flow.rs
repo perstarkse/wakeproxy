@@ -69,12 +69,39 @@ async fn wake_page_renders_status_when_upstream_is_sleeping() {
     assert!(body.contains("history.replaceState"));
     assert!(body.contains("window.location.reload()"));
     assert!(body.contains("Wake and connect"));
+    assert!(body.contains("Keep-awake is not configured on this gateway"));
+    assert!(!body.contains("name=\"keep_awake_for_secs\""));
+}
+
+#[tokio::test]
+async fn wake_page_renders_keep_awake_choices_when_command_is_configured() {
+    let upstream = spawn_upstream().await;
+    let mut config = build_config(upstream.addr.port(), "password-wake-keep-awake");
+    config.wake_poll_interval_ms = 20;
+    config.keep_awake_command = Some("/usr/local/bin/keep-awake".into());
+    config.keep_awake_max_secs = 3600;
+    let gateway = spawn_gateway(config, OkWakeSender, NeverReadyProbe).await;
+    let client = test_client();
+
+    let cookie =
+        login_and_extract_cookie(&client, &gateway.url(), "password-wake-keep-awake").await;
+
+    let response = client
+        .get(format!("{}/_wake?next=%2Fdemo", gateway.url()))
+        .header(COOKIE, &cookie)
+        .send()
+        .await
+        .expect("wake page response");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body = response.text().await.expect("body");
     assert!(body.contains("name=\"keep_awake_for_secs\""));
-    assert!(body.contains("Defaults to 15 minutes"));
+    assert!(body.contains("Defaults to 15 minutes. Max 1 hour."));
     assert!(body.contains("value=\"900\" selected"));
     assert!(body.contains("15 minutes"));
     assert!(body.contains("30 minutes"));
     assert!(body.contains("1 hour"));
+    assert!(!body.contains("4 hours"));
 }
 
 #[tokio::test]
