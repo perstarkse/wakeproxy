@@ -33,14 +33,30 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("polkit.service")
     machine.wait_for_unit("wake-proxy.service")
 
-    machine.succeed("systemd-inhibit --what=idle:sleep --mode=block --why=manual-test sleep 15 >/tmp/manual-inhibit.log 2>&1 &")
+    machine.succeed("systemd-inhibit --what=idle:sleep --mode=block --why=manual-test sleep 15 >/tmp/manual-inhibit.log 2>&1 & echo $! > /tmp/manual-inhibit.pid")
     machine.sleep(1)
     machine.succeed("systemd-inhibit --list | grep -F 'manual-test'")
-    machine.succeed("pkill -f 'manual-test sleep 15' || true")
+    machine.succeed("kill $(cat /tmp/manual-inhibit.pid) || true")
 
-    machine.succeed("su -s /bin/sh -c '/run/current-system/sw/bin/wakeproxy-keep-awake-target 15' wake-proxy")
+    helper_env = "WAKEPROXY_KEEP_AWAKE_TARGET_MAX_SECS=30 WAKEPROXY_KEEP_AWAKE_TARGET_UNIT=wakeproxy-keep-awake-test WAKEPROXY_KEEP_AWAKE_STATE_DIR=/var/lib/wake-proxy"
+
+    machine.succeed(f"su -s /bin/sh -c '{helper_env} /run/current-system/sw/bin/wakeproxy-keep-awake-target 15' wake-proxy")
     machine.sleep(1)
     machine.succeed("systemd-inhibit --list | grep -F 'wakeproxy remote session'")
     machine.succeed("test -s /var/lib/wake-proxy/wakeproxy-keep-awake-test.pid")
+    machine.succeed("test -s /var/lib/wake-proxy/wakeproxy-keep-awake-test.until")
+    machine.succeed("cat /var/lib/wake-proxy/wakeproxy-keep-awake-test.pid > /tmp/long-lease.pid")
+    machine.succeed("cat /var/lib/wake-proxy/wakeproxy-keep-awake-test.until > /tmp/long-lease.until")
+
+    machine.succeed(f"su -s /bin/sh -c '{helper_env} /run/current-system/sw/bin/wakeproxy-keep-awake-target 5' wake-proxy")
+    machine.succeed("cmp -s /tmp/long-lease.pid /var/lib/wake-proxy/wakeproxy-keep-awake-test.pid")
+    machine.succeed("cmp -s /tmp/long-lease.until /var/lib/wake-proxy/wakeproxy-keep-awake-test.until")
+    machine.succeed("kill -0 $(cat /var/lib/wake-proxy/wakeproxy-keep-awake-test.pid)")
+    machine.succeed("systemd-inhibit --list | grep -F 'wakeproxy remote session'")
+
+    machine.succeed(f"su -s /bin/sh -c '{helper_env} /run/current-system/sw/bin/wakeproxy-keep-awake-target 20' wake-proxy")
+    machine.succeed("! cmp -s /tmp/long-lease.pid /var/lib/wake-proxy/wakeproxy-keep-awake-test.pid")
+    machine.succeed("test $(cat /var/lib/wake-proxy/wakeproxy-keep-awake-test.until) -gt $(cat /tmp/long-lease.until)")
+    machine.succeed("kill -0 $(cat /var/lib/wake-proxy/wakeproxy-keep-awake-test.pid)")
   '';
 }

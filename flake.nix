@@ -63,6 +63,9 @@
       keep-awake-debug = import ./nix/tests/keep-awake-debug.nix {
         inherit self pkgs;
       };
+      keep-awake-ssh = import ./nix/tests/keep-awake-ssh.nix {
+        inherit self pkgs;
+      };
     });
 
     nixosModules = {
