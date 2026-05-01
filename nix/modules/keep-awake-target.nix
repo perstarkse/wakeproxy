@@ -69,11 +69,6 @@
 
   forcedKeyOptions = ''command="${forcedCommand}",restrict,no-agent-forwarding,no-X11-forwarding,no-port-forwarding,no-pty'';
 
-  forcedAuthorizedKeysFile = pkgs.writeText "wakeproxy-keep-awake-authorized-keys" (
-    lib.concatMapStringsSep "\n" (key: "${forcedKeyOptions} ${key}") cfg.sshTarget.authorizedKeys
-    + lib.optionalString (cfg.sshTarget.authorizedKeys != []) "\n"
-  );
-
   restrictAuthorizedKeys = pkgs.writeShellApplication {
     name = "wakeproxy-restrict-authorized-keys";
     runtimeInputs = [pkgs.coreutils];
@@ -91,13 +86,10 @@
     '';
   };
 
-  localWakeproxyEnabled = cfg.enable && config.services.wakeproxy.enable && !cfg.remoteSsh.enable;
-  remoteWakeproxyEnabled = cfg.enable && config.services.wakeproxy.enable && cfg.remoteSsh.enable;
-  targetEnabled = cfg.sshTarget.enable;
+  isWakeproxyHost = config.services.wakeproxy.enable && cfg.remoteSsh.host != "";
+  isTargetHost = cfg.sshTarget.enable;
 in {
   options.services.wakeproxy.keepAwake = {
-    enable = lib.mkEnableOption "wakeproxy keep-awake helper";
-
     package = lib.mkOption {
       type = lib.types.package;
       default = helperPackage;
@@ -124,11 +116,10 @@ in {
     };
 
     remoteSsh = {
-      enable = lib.mkEnableOption "calling a remote keep-awake target over SSH";
-
       host = lib.mkOption {
         type = lib.types.str;
-        description = "Remote host that should receive the keep-awake inhibit lock.";
+        default = "";
+        description = "Remote host that should receive the keep-awake inhibit lock. Set to enable remote keep-awake.";
       };
 
       port = lib.mkOption {
@@ -145,6 +136,7 @@ in {
 
       identityFile = lib.mkOption {
         type = lib.types.path;
+        default = "/var/lib/wake-proxy/keep-awake-ssh-key";
         description = "Private SSH key used by wakeproxy to call the remote keep-awake target.";
       };
 
@@ -191,45 +183,7 @@ in {
   };
 
   config = lib.mkMerge [
-    (lib.mkIf (localWakeproxyEnabled || targetEnabled) {
-      environment.systemPackages = [cfg.package];
-
-      security.polkit.enable = lib.mkIf cfg.allowInhibitViaPolkit true;
-      security.polkit.extraConfig = lib.mkIf cfg.allowInhibitViaPolkit ''
-        polkit.addRule(function(action, subject) {
-          if (
-            (
-              subject.user == "${config.services.wakeproxy.user}" ||
-              subject.user == "${cfg.sshTarget.user}"
-            ) &&
-            (
-              action.id == "org.freedesktop.login1.inhibit-block-sleep" ||
-              action.id == "org.freedesktop.login1.inhibit-block-idle"
-            )
-          ) {
-            return polkit.Result.YES;
-          }
-        });
-      '';
-    })
-
-    (lib.mkIf localWakeproxyEnabled {
-      systemd.services.wake-proxy.serviceConfig = {
-        Environment = [
-          "WAKEPROXY_KEEP_AWAKE_COMMAND=${lib.getExe cfg.package}"
-          "WAKEPROXY_KEEP_AWAKE_MAX_SECS=${toString cfg.maxDurationSeconds}"
-          "WAKEPROXY_KEEP_AWAKE_TARGET_MAX_SECS=${toString cfg.maxDurationSeconds}"
-          "WAKEPROXY_KEEP_AWAKE_TARGET_UNIT=${cfg.unitName}"
-          "WAKEPROXY_KEEP_AWAKE_STATE_DIR=/var/lib/${config.services.wakeproxy.user}"
-        ];
-        StateDirectory = config.services.wakeproxy.user;
-        PrivateDevices = lib.mkForce false;
-        ProtectControlGroups = lib.mkForce false;
-        ProtectSystem = lib.mkForce "full";
-      };
-    })
-
-    (lib.mkIf remoteWakeproxyEnabled {
+    (lib.mkIf isWakeproxyHost {
       systemd.services.wake-proxy = {
         path = [pkgs.openssh];
         serviceConfig.Environment = [
@@ -239,7 +193,24 @@ in {
       };
     })
 
-    (lib.mkIf targetEnabled {
+    (lib.mkIf isTargetHost {
+      environment.systemPackages = [cfg.package];
+
+      security.polkit.enable = lib.mkIf cfg.allowInhibitViaPolkit true;
+      security.polkit.extraConfig = lib.mkIf cfg.allowInhibitViaPolkit ''
+        polkit.addRule(function(action, subject) {
+          if (
+            subject.user == "${cfg.sshTarget.user}" &&
+            (
+              action.id == "org.freedesktop.login1.inhibit-block-sleep" ||
+              action.id == "org.freedesktop.login1.inhibit-block-idle"
+            )
+          ) {
+            return polkit.Result.YES;
+          }
+        });
+      '';
+
       users.groups.${cfg.sshTarget.group} = {};
       users.users.${cfg.sshTarget.user} = {
         isSystemUser = true;

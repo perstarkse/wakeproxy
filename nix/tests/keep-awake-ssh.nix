@@ -55,10 +55,8 @@ pkgs.testers.runNixOSTest {
         passwordHashFile = passwordSecrets;
         cookieSecure = false;
         keepAwake = {
-          enable = true;
           maxDurationSeconds = 30;
           remoteSsh = {
-            enable = true;
             host = "target";
             identityFile = "/var/lib/wake-proxy/keep-awake-ssh-key";
             hostPublicKey = null;

@@ -41,11 +41,7 @@ pkgs.testers.runNixOSTest {
           cookieSecure = false;
           loginMaxFailures = 1000;
 
-          keepAwake = {
-            enable = true;
-            unitName = "wakeproxy-keep-awake-e2e";
-            maxDurationSeconds = 30;
-          };
+
         };
       };
 
@@ -172,10 +168,6 @@ client.wait_until_succeeds("curl -fsS -b /tmp/wake.cookies http://127.0.0.1:8091
 client.wait_until_succeeds("jq -e '.ready == true and .redirect_to == \"/demo\"' /tmp/wake-poll.json >/dev/null")
 client.wait_until_succeeds("curl -fsS -b /tmp/wake.cookies http://127.0.0.1:8091/demo | grep -F 'demo-ok'")
 
-client.wait_until_succeeds("test -s /var/lib/wake-proxy/wakeproxy-keep-awake-e2e.pid")
-client.wait_until_succeeds("kill -0 $(cat /var/lib/wake-proxy/wakeproxy-keep-awake-e2e.pid)")
-client.wait_until_succeeds("systemd-inhibit --list | grep -F 'wakeproxy remote session'")
-
 client.succeed("journalctl -u wake-proxy --no-pager > /tmp/wake-proxy-journal.txt")
 client.succeed("grep -F 'successful login' /tmp/wake-proxy-journal.txt")
 client.succeed("grep -F 'upstream ready' /tmp/wake-proxy-journal.txt")
@@ -183,8 +175,5 @@ client.succeed("grep -F 'upstream ready' /tmp/wake-proxy-journal.txt")
 server.succeed("grep -F 'WOL from ' /tmp/wakeproxy-e2e/wol.log")
 server.succeed("grep -F 'GET /health' /tmp/wakeproxy-e2e/upstream.log")
 server.succeed("grep -F 'GET /demo' /tmp/wakeproxy-e2e/upstream.log")
-
-client.sleep(7)
-client.wait_until_succeeds("! systemd-inhibit --list | grep -F 'wakeproxy remote session'")
   '';
 }
