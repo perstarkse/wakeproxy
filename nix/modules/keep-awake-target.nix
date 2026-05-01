@@ -32,7 +32,11 @@
           "-o"
           "IdentitiesOnly=yes"
           "-o"
-          "StrictHostKeyChecking=${if cfg.remoteSsh.hostPublicKey == null then "accept-new" else "yes"}"
+          "StrictHostKeyChecking=${
+            if cfg.remoteSsh.hostPublicKey == null
+            then "accept-new"
+            else "yes"
+          }"
         ]
         ++ sshKnownHostsArgs
         ++ [
@@ -135,7 +139,7 @@ in {
       };
 
       identityFile = lib.mkOption {
-        type = lib.types.path;
+        type = lib.types.str;
         default = "/var/lib/wake-proxy/keep-awake-ssh-key";
         description = "Private SSH key used by wakeproxy to call the remote keep-awake target.";
       };
@@ -216,14 +220,14 @@ in {
         isSystemUser = true;
         group = cfg.sshTarget.group;
         shell = pkgs.bash;
-        openssh.authorizedKeys.keys =
-          let
-            fileKeys = if cfg.sshTarget.authorizedKeysFile != null
-              then lib.filter (k: k != "") (lib.splitString "\n" (builtins.readFile cfg.sshTarget.authorizedKeysFile))
-              else [];
-            allKeys = cfg.sshTarget.authorizedKeys ++ fileKeys;
-          in
-            map (key: "${forcedKeyOptions} ${key}") allKeys;
+        openssh.authorizedKeys.keys = let
+          fileKeys =
+            if cfg.sshTarget.authorizedKeysFile != null
+            then lib.filter (k: k != "") (lib.splitString "\n" (builtins.readFile cfg.sshTarget.authorizedKeysFile))
+            else [];
+          allKeys = cfg.sshTarget.authorizedKeys ++ fileKeys;
+        in
+          map (key: "${forcedKeyOptions} ${key}") allKeys;
       };
 
       systemd.tmpfiles.rules = [
