@@ -45,7 +45,6 @@
           "-p"
           (toString cfg.remoteSsh.port)
           "${cfg.remoteSsh.user}@${cfg.remoteSsh.host}"
-          "--"
         ]
       )} "$seconds"
     '';
