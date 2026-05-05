@@ -138,7 +138,7 @@ in {
       };
 
       identityFile = lib.mkOption {
-        type = lib.types.str;
+        type = lib.types.path;
         default = "/var/lib/wake-proxy/keep-awake-ssh-key";
         description = "Private SSH key used by wakeproxy to call the remote keep-awake target.";
       };
