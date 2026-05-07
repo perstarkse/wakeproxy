@@ -219,14 +219,7 @@ in {
         isSystemUser = true;
         group = cfg.sshTarget.group;
         shell = pkgs.bash;
-        openssh.authorizedKeys.keys = let
-          fileKeys =
-            if cfg.sshTarget.authorizedKeysFile != null
-            then lib.filter (k: k != "") (lib.splitString "\n" (builtins.readFile cfg.sshTarget.authorizedKeysFile))
-            else [];
-          allKeys = cfg.sshTarget.authorizedKeys ++ fileKeys;
-        in
-          map (key: "${forcedKeyOptions} ${key}") allKeys;
+        openssh.authorizedKeys.keys = map (key: "${forcedKeyOptions} ${key}") cfg.sshTarget.authorizedKeys;
       };
 
       systemd.tmpfiles.rules = [
