@@ -96,14 +96,6 @@
                   language = "system";
                   pass_filenames = false;
                 };
-                "e2e-local" = {
-                  enable = true;
-                  name = "Local E2E smoke";
-                  entry = "./scripts/e2e-local.sh";
-                  language = "system";
-                  pass_filenames = false;
-                  stages = ["pre-commit"];
-                };
               };
             }
           )

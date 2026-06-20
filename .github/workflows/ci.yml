@@ -10,19 +10,6 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-
-      - name: Run dev shell checks
-        run: nix develop --impure -c devenv test
-
   nix:
     runs-on: ubuntu-latest
 

@@ -8,12 +8,13 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ### Changed
 
-- Fold the devenv development shell into `flake.nix`; use `nix develop --impure` instead of the standalone devenv CLI entry point
-- Align the dev shell on the flake's `nixos-unstable` nixpkgs pin (replacing `devenv-nixpkgs/rolling`)
-- Run GitHub Actions through the flake dev shell (`devenv test` and `nix flake check`)
+- Drop the `test` CI job and remove `scripts/` entirely;
+- Remove `e2e-local` pre-commit hook (deprecated in favour of the NixOS VM e2e test in `nix/tests/deployment-e2e.nix`)
+- Fold the devenv dev shell into `flake.nix`; use `nix develop --impure` instead of the standalone devenv CLI entry point
+- Align the dev shell on the flake's `nixos-unstable` nixpkgs pin (replacing `devenv-nixpkgs/rolling`).
+- Run GitHub Actions via `nix flake check --impure` (dropped the separate `devenv test` job)
 - Drop devenv Cachix `nixConfig` substituters so `direnv`/`nix develop` do not prompt for untrusted flake settings
-- Quiet `.envrc` loading and suppress direnv/devenv enter-shell noise after hooks are installed
-- Inline the devenv dev shell config into `flake.nix` (remove `devenv.nix`)
+- Quiet `.envrc` loading and suppress direnv/devenv  enter-shell noise after hooks are installed
 
 ## [0.1.0] - 2026-03-10
 
