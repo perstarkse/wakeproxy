@@ -92,6 +92,18 @@ cargo run
 
 - `/_dev/wake-preview` exists only in debug builds and returns `404` in release builds.
 
+## Development environment
+
+Nix flake dev shell (devenv): Rust toolchain, coverage, and pre-commit hooks.
+
+With [direnv](https://direnv.net/) + [nix-direnv](https://github.com/nix-community/nix-direnv), `cd` into the repo loads the shell (see `.envrc`). Manual entry:
+
+```bash
+nix develop --impure
+```
+
+Plain `nix develop` fails: devenv needs the checkout path at eval time. Use `--impure` (or `--no-pure-eval`).
+
 ## Local run
 
 ```bash
@@ -106,15 +118,15 @@ cargo test
 
 ## Coverage
 
-Run coverage inside the devenv shell (same command and threshold used by hooks):
+Run coverage in the dev shell (same threshold as hooks):
 
 ```bash
-devenv shell -- cargo llvm-cov --workspace --all-features --summary-only --fail-under-lines 90
+cargo llvm-cov --workspace --all-features --summary-only --fail-under-lines 90
 ```
 
 ## Pre-commit checks
 
-`devenv test` runs the configured hook suite (`fmt`, `clippy`, `test`, coverage, local e2e smoke):
+`devenv test` runs the hook suite (`fmt`, `clippy`, `test`, coverage, local e2e smoke):
 
 ```bash
 devenv test
@@ -123,7 +135,7 @@ devenv test
 For verbose per-hook output (commands, logs, durations), run:
 
 ```bash
-devenv shell -- prek run --all-files -v
+prek run --all-files -v
 ```
 
 ## Local E2E Smoke Test

@@ -212,6 +212,10 @@
     color: #6c5730;
   }
 
+  [data-gateway-error]:not(.hidden) ~ :not([data-gateway-error]) {
+    display: none;
+  }
+
   .progress-label-short {
     display: none;
   }
@@ -304,8 +308,15 @@
       return;
     }
 
-    const next = root.dataset.next || "/";
-    const pollInterval = Number(root.dataset.pollIntervalMs || "2000");
+    let config = {};
+    try {
+      config = JSON.parse(root.dataset.wakeConfig || "{}");
+    } catch (_) {
+      config = {};
+    }
+
+    const next = config.next || "/";
+    const pollInterval = Number(config.pollIntervalMs || "2000");
     const stateNode = document.querySelector("[data-state-label]");
     const messageNode = document.querySelector("[data-message]");
     const cycleNode = document.querySelector("[data-cycle]");
@@ -315,8 +326,10 @@
     const pollMetaNode = document.querySelector("[data-poll-meta]");
     const progressNodes = Array.from(document.querySelectorAll("[data-progress-step]"));
     const orderedSteps = ["sleeping", "waking", "ping_ready", "http_ready", "ready"];
-    const previewMode = root.dataset.previewMode === "true";
-    const previewAuto = root.dataset.previewAuto === "true";
+    const gatewayErrorNode = document.querySelector("[data-gateway-error]");
+    const retryButton = document.querySelector("[data-retry]");
+    const previewMode = config.previewMode === true;
+    const previewAuto = config.previewAuto === true;
 
     let lastSuccessAt = null;
     let pollHealth = "idle";
@@ -324,6 +337,10 @@
     let previewIndex = 0;
     let routeBoundToNext = false;
     let readyNavigationIssued = false;
+    let consecutiveFailures = 0;
+    let sseSource = null;
+    let pollTimer = null;
+    let updateTimer = null;
 
     const previewStates = [
       "sleeping",
@@ -373,7 +390,9 @@
 
       if (lastSuccessAt === null) {
         const seconds = Math.max(1, Math.round(pollInterval / 1000));
-        pollMetaNode.textContent = `Polling every ${seconds}s`;
+        pollMetaNode.textContent = sseSource
+          ? `SSE connected. Updates every ${seconds}s fallback.`
+          : `Polling every ${seconds}s`;
         return;
       }
 
@@ -450,7 +469,30 @@
       }
     };
 
+    const showFullGatewayError = () => {
+      if (gatewayErrorNode) {
+        gatewayErrorNode.classList.remove("hidden");
+      }
+      pollHealth = "error";
+      root.dataset.polling = "error";
+      if (pollStateNode) {
+        pollStateNode.textContent = "Disconnected";
+      }
+      if (pollMetaNode) {
+        pollMetaNode.textContent = "Gateway unreachable. Check your connection.";
+      }
+    };
+
+    const hideFullGatewayError = () => {
+      if (gatewayErrorNode) {
+        gatewayErrorNode.classList.add("hidden");
+      }
+    };
+
     const applyPayload = (payload) => {
+      consecutiveFailures = 0;
+      hideFullGatewayError();
+
       if (stateNode) {
         stateNode.textContent = payload.state;
       }
@@ -480,6 +522,23 @@
       }
     };
 
+    const handleError = () => {
+      consecutiveFailures++;
+      if (consecutiveFailures >= 3) {
+        showFullGatewayError();
+      } else {
+        setPollIndicator("error");
+      }
+      nextIndicator = "error";
+    };
+
+    const handleSuccess = () => {
+      lastSuccessAt = Date.now();
+      if (nextIndicator === "error") {
+        nextIndicator = "idle";
+      }
+    };
+
     const waitForIndicatorFrame = async (startedAt) => {
       const elapsedMs = performance.now() - startedAt;
       const minimumVisibleMs = 320;
@@ -492,6 +551,8 @@
       });
     };
 
+    let nextIndicator = "idle";
+
     const poll = async () => {
       if (pollInFlight) {
         return;
@@ -499,7 +560,7 @@
 
       pollInFlight = true;
       const pollStartedAt = performance.now();
-      let nextIndicator = "idle";
+      nextIndicator = "idle";
       setPollIndicator("polling");
 
       if (previewMode && previewAuto) {
@@ -534,28 +595,84 @@
         });
 
         if (!response.ok) {
-          nextIndicator = "error";
+          handleError();
+          pollInFlight = false;
+          await waitForIndicatorFrame(pollStartedAt);
+          setPollIndicator(nextIndicator);
+          updatePollMeta();
           return;
         }
 
         const payload = await response.json();
-        lastSuccessAt = Date.now();
+        handleSuccess();
         applyPayload(payload);
       } catch (_error) {
-        nextIndicator = "error";
+        handleError();
       } finally {
+        pollInFlight = false;
         await waitForIndicatorFrame(pollStartedAt);
         setPollIndicator(nextIndicator);
         updatePollMeta();
-        pollInFlight = false;
       }
     };
 
-    setProgress(root.dataset.wakeState || "sleeping");
-    setMessageTone(root.dataset.wakeState || "sleeping");
+    const startPollFallback = () => {
+      if (pollTimer) {
+        return;
+      }
+      if (pollMetaNode) {
+        pollMetaNode.textContent = "SSE unavailable. Falling back to polling.";
+      }
+      void poll();
+      pollTimer = setInterval(() => {
+        void poll();
+      }, pollInterval);
+    };
+
+    const connectSSE = () => {
+      if (typeof EventSource === "undefined") {
+        startPollFallback();
+        return;
+      }
+
+      sseSource = new EventSource("/_wake/events");
+      sseSource.addEventListener("wake-state", (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          handleSuccess();
+          applyPayload(payload);
+        } catch (_) {
+          handleError();
+        }
+      });
+
+      sseSource.addEventListener("error", () => {
+        sseSource.close();
+        sseSource = null;
+        startPollFallback();
+      });
+    };
+
+    const stopTimers = () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      if (updateTimer) {
+        clearInterval(updateTimer);
+        updateTimer = null;
+      }
+    };
+
+    const startTimers = () => {
+      updateTimer = setInterval(updatePollMeta, 1000);
+    };
+
+    setProgress(config.state || "sleeping");
+    setMessageTone(config.state || "sleeping");
     setPollIndicator("idle");
     updatePollMeta();
-    setButtonState(root.dataset.retryable === "true", root.dataset.ready === "true");
+    setButtonState(config.retryable === true, config.ready === true);
 
     if (!previewMode && window.history && typeof window.history.replaceState === "function") {
       try {
@@ -566,8 +683,24 @@
       }
     }
 
+    if (retryButton) {
+      retryButton.addEventListener("click", () => {
+        consecutiveFailures = 0;
+        hideFullGatewayError();
+        nextIndicator = "idle";
+        setPollIndicator("idle");
+        updatePollMeta();
+        if (!sseSource) {
+          connectSSE();
+        }
+        void poll();
+      });
+    }
+
+    startTimers();
+
     if (previewMode) {
-      previewIndex = Math.max(previewStates.indexOf(root.dataset.wakeState || "sleeping"), 0);
+      previewIndex = Math.max(previewStates.indexOf(config.state || "sleeping"), 0);
       if (!previewAuto) {
         setPollIndicator("idle");
         if (pollStateNode) {
@@ -580,17 +713,21 @@
       }
     }
 
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      if (event.data.type === "gateway-unreachable") {
+        consecutiveFailures = Math.max(consecutiveFailures, 3);
+        showFullGatewayError();
+      }
+    });
+
     void poll();
-    setInterval(() => {
-      void poll();
-    }, pollInterval);
-    setInterval(updatePollMeta, 1000);
+    connectSSE();
   });
 </script>
 {% endblock head_extra %}
 
 {% block body %}
-<div data-wake-root data-next="{{ next }}" data-poll-interval-ms="{{ poll_interval_ms }}" data-ready="false" data-retryable="{{ retryable }}" data-wake-state="{{ state }}" data-polling="idle" data-preview-mode="{{ preview_mode }}" data-preview-auto="{{ preview_auto }}">
+<div data-wake-root data-wake-config='{{ config_json | safe }}'>
   <div class="status-head">
     <h1>Remote system status</h1>
     <p class="live-chip" role="status" aria-live="polite">
@@ -688,5 +825,13 @@
     <button type="submit" data-wake-action>{% if retryable %}Wake and connect{% else %}Wake in progress...{% endif %}</button>
     <a class="button-link secondary" href="/_auth/login">Back to login</a>
   </form>
+  <div data-gateway-error class="hidden">
+    <h1>Gateway unreachable</h1>
+    <p class="alert danger">The gateway is not responding. Your connection may be offline or the gateway server may be down.</p>
+    <div class="actions">
+      <button type="button" data-retry>Retry now</button>
+      <a class="button-link secondary" href="/_auth/login">Back to login</a>
+    </div>
+  </div>
 </div>
 {% endblock body %}

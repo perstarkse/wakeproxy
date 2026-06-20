@@ -6,6 +6,15 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ## [Unreleased]
 
+### Changed
+
+- Fold the devenv development shell into `flake.nix`; use `nix develop --impure` instead of the standalone devenv CLI entry point
+- Align the dev shell on the flake's `nixos-unstable` nixpkgs pin (replacing `devenv-nixpkgs/rolling`)
+- Run GitHub Actions through the flake dev shell (`devenv test` and `nix flake check`)
+- Drop devenv Cachix `nixConfig` substituters so `direnv`/`nix develop` do not prompt for untrusted flake settings
+- Quiet `.envrc` loading and suppress direnv/devenv enter-shell noise after hooks are installed
+- Inline the devenv dev shell config into `flake.nix` (remove `devenv.nix`)
+
 ## [0.1.0] - 2026-03-10
 
 Initial open source release.

@@ -15,7 +15,7 @@ This project aims to stay small and operationally simple.
 Run the main checks before opening a change:
 
 ```bash
-devenv test
+nix develop --impure -c devenv test
 ```
 
 For the local end-to-end smoke flow:

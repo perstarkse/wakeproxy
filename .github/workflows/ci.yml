@@ -17,22 +17,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
 
-      - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+      - name: Run dev shell checks
+        run: nix develop --impure -c devenv test
 
-      - name: Check formatting
-        run: cargo fmt --check
+  nix:
+    runs-on: ubuntu-latest
 
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Run tests
-        run: cargo test
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
 
-      - name: Run local e2e smoke
-        run: ./scripts/e2e-local.sh
+      - name: Nix flake check
+        run: nix flake check --impure

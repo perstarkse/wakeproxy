@@ -2,17 +2,20 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
+use axum::http::header::{HeaderName, HeaderValue};
 use axum::routing::{any, get, post};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use tera::Tera;
 use tower::ServiceBuilder;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
 mod assets;
 mod auth_routes;
 mod middleware;
+mod rate_limit;
 mod security;
 mod templates;
 mod wake_routes;
@@ -25,6 +28,8 @@ use crate::config::Config;
 use crate::proxy::ProxyService;
 use crate::wake::WakeCoordinator;
 
+use self::rate_limit::WakeRateLimiter;
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
@@ -32,6 +37,7 @@ pub struct AppState {
     auth: Arc<AuthService>,
     wake: Arc<WakeCoordinator>,
     proxy: Arc<ProxyService>,
+    wake_rate_limiter: Arc<WakeRateLimiter>,
 }
 
 impl AppState {
@@ -43,6 +49,10 @@ impl AppState {
     ) -> Self {
         let auth = Arc::new(AuthService::new(&config));
         let proxy = Arc::new(ProxyService::new(config.clone(), proxy_client));
+        let wake_rate_limiter = Arc::new(WakeRateLimiter::new(
+            config.wake_max_starts,
+            std::time::Duration::from_secs(config.wake_window_secs),
+        ));
 
         Self {
             config,
@@ -50,6 +60,7 @@ impl AppState {
             auth,
             wake,
             proxy,
+            wake_rate_limiter,
         }
     }
 }
@@ -59,6 +70,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/_wake", get(wake_routes::wake_page))
         .route("/_wake/start", post(wake_routes::wake_start_submit))
         .route("/_wake/poll", get(wake_routes::wake_poll))
+        .route("/_wake/events", get(wake_routes::wake_events))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::auth_guard_middleware,
@@ -75,7 +87,7 @@ pub fn build_router(state: AppState) -> Router {
             middleware::auth_guard_middleware,
         ));
 
-    Router::new()
+    let mut router = Router::new()
         .route("/_auth/login", get(auth_routes::login_page))
         .route("/_auth/login", post(auth_routes::login_submit))
         .route("/_auth/logout", post(auth_routes::logout_submit))
@@ -98,7 +110,16 @@ pub fn build_router(state: AppState) -> Router {
                 .layer(PropagateRequestIdLayer::x_request_id())
                 .layer(TraceLayer::new_for_http()),
         )
-        .with_state(state)
+        .with_state(state.clone());
+
+    if state.config.cookie_secure {
+        router = router.layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("strict-transport-security"),
+            HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+        ));
+    }
+
+    router
 }
 
 #[cfg(test)]

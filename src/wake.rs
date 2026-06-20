@@ -2,9 +2,11 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use serde::Serialize;
 use thiserror::Error;
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, watch};
@@ -12,7 +14,8 @@ use tracing::{error, info, warn};
 
 use crate::readiness::ReadinessProbe;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WakeState {
     Sleeping,
     Waking,
@@ -31,7 +34,7 @@ pub enum EnsureReadyResult {
     Failed { cycle_id: u64, reason: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct WakeStatusSnapshot {
     pub cycle_id: Option<u64>,
     pub state: WakeState,
@@ -170,6 +173,8 @@ pub struct WakeCoordinator {
     probe: Arc<dyn ReadinessProbe>,
     keep_awake: Arc<dyn KeepAwakeRunner>,
     inner: Arc<Mutex<Inner>>,
+    keep_awake_gen: Arc<AtomicU64>,
+    global_state_tx: watch::Sender<WakeStatusSnapshot>,
 }
 
 struct Inner {
@@ -205,6 +210,13 @@ impl WakeCoordinator {
         probe: Arc<dyn ReadinessProbe>,
         keep_awake: Arc<dyn KeepAwakeRunner>,
     ) -> Self {
+        let (global_state_tx, _) = watch::channel(WakeStatusSnapshot {
+            cycle_id: None,
+            state: WakeState::Sleeping,
+            ready: false,
+            reason: None,
+        });
+
         Self {
             config,
             sender,
@@ -219,6 +231,8 @@ impl WakeCoordinator {
                 pending_keep_awake: None,
                 keep_awake_until: None,
             })),
+            keep_awake_gen: Arc::new(AtomicU64::new(0)),
+            global_state_tx,
         }
     }
 
@@ -229,6 +243,10 @@ impl WakeCoordinator {
 
         let (cycle, _) = self.get_or_start_cycle().await;
         self.wait_for_cycle(cycle, max_wait).await
+    }
+
+    pub fn subscribe(&self) -> watch::Receiver<WakeStatusSnapshot> {
+        self.global_state_tx.subscribe()
     }
 
     pub async fn start_wake(&self, keep_awake_for: Option<Duration>) -> WakeStartResult {
@@ -329,7 +347,7 @@ impl WakeCoordinator {
 
         let now = Instant::now();
         let requested_until = now + duration;
-        let previous_until = {
+        let generation = {
             let mut inner = self.inner.lock().await;
             if inner
                 .keep_awake_until
@@ -337,22 +355,17 @@ impl WakeCoordinator {
             {
                 return;
             }
-            let previous_until = inner.keep_awake_until;
             inner.keep_awake_until = Some(requested_until);
-            previous_until
+            self.keep_awake_gen.fetch_add(1, Ordering::Relaxed) + 1
         };
 
-        self.start_keep_awake(duration, requested_until, previous_until);
+        self.start_keep_awake(duration, generation);
     }
 
-    fn start_keep_awake(
-        &self,
-        duration: Duration,
-        requested_until: Instant,
-        previous_until: Option<Instant>,
-    ) {
+    fn start_keep_awake(&self, duration: Duration, generation: u64) {
         let keep_awake = self.keep_awake.clone();
         let inner = self.inner.clone();
+        let keep_awake_gen = self.keep_awake_gen.clone();
         tokio::spawn(async move {
             if let Err(error) = keep_awake.keep_awake(duration).await {
                 warn!(
@@ -361,9 +374,10 @@ impl WakeCoordinator {
                     "keep-awake request failed"
                 );
 
-                let mut inner = inner.lock().await;
-                if inner.keep_awake_until == Some(requested_until) {
-                    inner.keep_awake_until = previous_until;
+                let current_gen = keep_awake_gen.load(Ordering::Relaxed);
+                if generation == current_gen {
+                    let mut inner = inner.lock().await;
+                    inner.keep_awake_until = None;
                 }
             }
         });
@@ -438,6 +452,7 @@ impl WakeCoordinator {
     async fn run_cycle(&self, cycle: Arc<WakeCycle>) {
         let cycle_id = cycle.id;
         cycle.set_state(WakeState::Waking);
+        self.publish_cycle_snapshot(cycle_id, WakeState::Waking, false, None);
         info!(cycle_id, "starting wake cycle");
 
         if let Err(error) = self.sender.send_magic_packet().await {
@@ -445,6 +460,12 @@ impl WakeCoordinator {
             let outcome = WakeOutcome::Failed(error.to_string());
             cycle.set_state(WakeState::Failed);
             cycle.set_result(outcome.clone());
+            self.publish_cycle_snapshot(
+                cycle_id,
+                WakeState::Failed,
+                false,
+                Some(error.to_string()),
+            );
             self.finish_cycle(cycle_id, outcome, None).await;
             return;
         }
@@ -456,6 +477,7 @@ impl WakeCoordinator {
                 let outcome = WakeOutcome::TimedOut;
                 cycle.set_state(WakeState::TimedOut);
                 cycle.set_result(outcome.clone());
+                self.publish_cycle_snapshot(cycle_id, WakeState::TimedOut, false, None);
                 info!(cycle_id, "wake cycle timed out");
                 self.finish_cycle(cycle_id, outcome, None).await;
                 return;
@@ -464,6 +486,7 @@ impl WakeCoordinator {
             let ping_ok = self.probe.ping().await;
             if ping_ok {
                 cycle.set_state(WakeState::PingReady);
+                self.publish_cycle_snapshot(cycle_id, WakeState::PingReady, false, None);
             }
 
             let health_ok = if ping_ok {
@@ -474,8 +497,10 @@ impl WakeCoordinator {
             if ping_ok && health_ok {
                 let outcome = WakeOutcome::Ready;
                 cycle.set_state(WakeState::HttpReady);
+                self.publish_cycle_snapshot(cycle_id, WakeState::HttpReady, false, None);
                 cycle.set_state(WakeState::Ready);
                 cycle.set_result(outcome.clone());
+                self.publish_cycle_snapshot(cycle_id, WakeState::Ready, true, None);
                 info!(cycle_id, "upstream ready");
                 self.finish_cycle(cycle_id, outcome, Some(Instant::now()))
                     .await;
@@ -519,7 +544,29 @@ impl WakeCoordinator {
     async fn mark_direct_ready(&self) {
         let mut inner = self.inner.lock().await;
         inner.last_ready_at = Some(Instant::now());
+        inner.last_ready_cycle_id = Some(0);
         inner.last_outcome = None;
+        drop(inner);
+        self.publish_cycle_snapshot(0, WakeState::Ready, true, None);
+    }
+
+    fn publish_snapshot(&self, snapshot: WakeStatusSnapshot) {
+        let _ = self.global_state_tx.send(snapshot);
+    }
+
+    fn publish_cycle_snapshot(
+        &self,
+        cycle_id: u64,
+        state: WakeState,
+        ready: bool,
+        reason: Option<String>,
+    ) {
+        self.publish_snapshot(WakeStatusSnapshot {
+            cycle_id: Some(cycle_id),
+            state,
+            ready,
+            reason,
+        });
     }
 }
 

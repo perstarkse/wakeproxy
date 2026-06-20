@@ -33,6 +33,9 @@ pub struct Config {
     pub login_max_tracked_ips: usize,
     pub keep_awake_command: Option<PathBuf>,
     pub keep_awake_max_secs: u64,
+    pub wake_max_starts: usize,
+    pub wake_window_secs: u64,
+    pub reachability_timeout_secs: u64,
 }
 
 #[derive(Debug, Error)]
@@ -140,6 +143,21 @@ impl Config {
             });
         }
 
+        let wake_max_starts = parse_optional::<usize>(map, "WAKEPROXY_WAKE_MAX_STARTS", 3)?;
+        let wake_window_secs = parse_optional::<u64>(map, "WAKEPROXY_WAKE_WINDOW_SECS", 300)?;
+
+        let reachability_timeout_secs =
+            parse_optional::<u64>(map, "WAKEPROXY_REACHABILITY_TIMEOUT_SECS", 1)?;
+        if reachability_timeout_secs == 0 || reachability_timeout_secs > poll_interval.as_secs() {
+            return Err(ConfigError::InvalidValue {
+                name: "WAKEPROXY_REACHABILITY_TIMEOUT_SECS",
+                value: format!(
+                    "value must be > 0 and <= poll_interval ({})",
+                    poll_interval.as_secs()
+                ),
+            });
+        }
+
         Ok(Self {
             upstream_host,
             upstream_port,
@@ -165,6 +183,9 @@ impl Config {
             login_max_tracked_ips,
             keep_awake_command,
             keep_awake_max_secs,
+            wake_max_starts,
+            wake_window_secs,
+            reachability_timeout_secs,
         })
     }
 

@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use reqwest::Client;
+use hyper_util::client::legacy::Client;
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::rt::TokioExecutor;
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::process::Command;
@@ -9,8 +11,8 @@ use crate::config::Config;
 
 #[derive(Debug, Error)]
 pub enum ReadinessError {
-    #[error("failed to build readiness HTTP client")]
-    ClientBuild(#[source] reqwest::Error),
+    #[error("health URL is not a valid URI: {url}")]
+    InvalidHealthUrl { url: String },
 }
 
 #[async_trait]
@@ -23,8 +25,9 @@ pub trait ReadinessProbe: Send + Sync {
 pub struct SystemReadinessProbe {
     host: String,
     upstream_port: u16,
-    health_url: String,
-    client: Client,
+    health_url: http::Uri,
+    client: Client<HttpConnector, axum::body::Body>,
+    request_timeout: Duration,
     ping_command: String,
     reachability_timeout: Duration,
 }
@@ -32,18 +35,19 @@ pub struct SystemReadinessProbe {
 impl SystemReadinessProbe {
     pub fn new(config: &Config) -> Result<Self, ReadinessError> {
         let health_url = format!("{}{}", config.upstream_base_url(), config.health_path);
-        let reachability_timeout = Duration::from_secs(1).min(config.poll_interval);
-
-        let client = Client::builder()
-            .timeout(config.poll_interval)
-            .build()
-            .map_err(ReadinessError::ClientBuild)?;
+        let health_url = health_url
+            .parse::<http::Uri>()
+            .map_err(|_| ReadinessError::InvalidHealthUrl { url: health_url })?;
+        let reachability_timeout = Duration::from_secs(config.reachability_timeout_secs);
+        let client: Client<HttpConnector, axum::body::Body> =
+            Client::builder(TokioExecutor::new()).build(HttpConnector::new());
 
         Ok(Self {
             host: config.upstream_host.clone(),
             upstream_port: config.upstream_port,
             health_url,
             client,
+            request_timeout: config.poll_interval,
             ping_command: "ping".to_string(),
             reachability_timeout,
         })
@@ -53,16 +57,18 @@ impl SystemReadinessProbe {
     fn with_ping_command(
         host: String,
         upstream_port: u16,
-        health_url: String,
+        health_url: http::Uri,
         timeout: Duration,
         ping_command: String,
     ) -> Self {
-        let client = Client::builder().timeout(timeout).build().expect("client");
+        let client: Client<HttpConnector, axum::body::Body> =
+            Client::builder(TokioExecutor::new()).build(HttpConnector::new());
         Self {
             host,
             upstream_port,
             health_url,
             client,
+            request_timeout: timeout,
             ping_command,
             reachability_timeout: timeout,
         }
@@ -106,9 +112,12 @@ impl ReadinessProbe for SystemReadinessProbe {
     }
 
     async fn health(&self) -> bool {
-        match self.client.get(&self.health_url).send().await {
-            Ok(response) => response.status().is_success(),
-            Err(_) => false,
+        let Ok(req) = http::Request::get(&self.health_url).body(axum::body::Body::empty()) else {
+            return false;
+        };
+        match tokio::time::timeout(self.request_timeout, self.client.request(req)).await {
+            Ok(Ok(response)) => response.status().is_success(),
+            _ => false,
         }
     }
 }
@@ -172,7 +181,7 @@ mod tests {
         let probe = SystemReadinessProbe::with_ping_command(
             "127.0.0.1".to_string(),
             addr.port(),
-            format!("http://{addr}/health"),
+            format!("http://{addr}/health").parse().expect("uri"),
             Duration::from_secs(1),
             "ping".to_string(),
         );
@@ -186,7 +195,7 @@ mod tests {
         let probe = SystemReadinessProbe::with_ping_command(
             "127.0.0.1".to_string(),
             1,
-            "http://127.0.0.1:1/health".to_string(),
+            "http://127.0.0.1:1/health".parse().expect("uri"),
             Duration::from_millis(200),
             "ping".to_string(),
         );
@@ -201,7 +210,7 @@ mod tests {
         let probe = SystemReadinessProbe::with_ping_command(
             "127.0.0.1".to_string(),
             addr.port(),
-            "http://127.0.0.1/health".to_string(),
+            "http://127.0.0.1/health".parse().expect("uri"),
             Duration::from_millis(200),
             "command-that-does-not-exist".to_string(),
         );
@@ -214,7 +223,7 @@ mod tests {
         let probe = SystemReadinessProbe::with_ping_command(
             "127.0.0.1".to_string(),
             1,
-            "http://127.0.0.1/health".to_string(),
+            "http://127.0.0.1/health".parse().expect("uri"),
             Duration::from_millis(200),
             "command-that-does-not-exist".to_string(),
         );
@@ -227,7 +236,7 @@ mod tests {
         let probe = SystemReadinessProbe::with_ping_command(
             "127.0.0.1".to_string(),
             1,
-            "http://127.0.0.1/health".to_string(),
+            "http://127.0.0.1/health".parse().expect("uri"),
             Duration::from_millis(200),
             "ping".to_string(),
         );
@@ -239,6 +248,6 @@ mod tests {
     fn new_uses_configured_health_path() {
         let config = config_with_health_path("/healthz");
         let probe = SystemReadinessProbe::new(&config).expect("probe");
-        assert!(probe.health_url.ends_with("/healthz"));
+        assert_eq!(probe.health_url.path(), "/healthz");
     }
 }

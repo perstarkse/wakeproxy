@@ -109,25 +109,14 @@ impl AuthService {
 
         self.maybe_prune_sessions(now).await;
 
-        {
-            let sessions = self.sessions.read().await;
-            let record = sessions.get(&token_hash)?;
-
-            if record.expires_at <= now {
-                return None;
-            }
-        }
-
         let mut sessions = self.sessions.write().await;
-        if let Some(record) = sessions.get_mut(&token_hash)
-            && record.expires_at > now
-        {
-            record.expires_at = now + self.session_ttl;
-            return Some(());
+        let record = sessions.get(&token_hash)?;
+        if record.expires_at <= now {
+            sessions.remove(&token_hash);
+            return None;
         }
-
-        sessions.remove(&token_hash);
-        None
+        sessions.get_mut(&token_hash)?.expires_at = now + self.session_ttl;
+        Some(())
     }
 
     pub async fn logout_from_headers(&self, headers: &HeaderMap) {
@@ -283,7 +272,11 @@ pub fn parse_cookie(headers: &HeaderMap, key: &str) -> Option<String> {
     Cookie::split_parse(cookie_header)
         .filter_map(Result::ok)
         .find_map(|cookie| {
-            if cookie.name() == key {
+            let name = cookie
+                .name()
+                .strip_prefix("__Host-")
+                .unwrap_or(cookie.name());
+            if name == key {
                 Some(cookie.value().to_string())
             } else {
                 None

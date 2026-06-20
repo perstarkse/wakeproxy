@@ -125,10 +125,10 @@ fn try_render_template(
 
 pub(super) fn app_error_response(state: &AppState, error: AppError) -> axum::response::Response {
     match error {
-        AppError::Proxy(proxy_error) => {
+        AppError::Proxy(ref proxy_error) => {
             error!(?proxy_error, "proxy request failed");
             let mut context = Context::new();
-            context.insert("error", &proxy_error.to_string());
+            context.insert("error", &proxy_error.map_user_message());
             match try_render_template(state, "error.html", context, StatusCode::BAD_GATEWAY) {
                 Ok(response) => response,
                 Err(template_error) => app_error_response(state, template_error.into()),

@@ -40,6 +40,8 @@ pkgs.testers.runNixOSTest {
           passwordHashFile = passwordSecrets;
           cookieSecure = false;
           loginMaxFailures = 1000;
+          keepAwakeCommand = "/bin/true";
+          keepAwakeMaxSecs = 3600;
 
 
         };

@@ -71,14 +71,22 @@ self.addEventListener("fetch", (event) => {
   if (request.mode === "navigate") {
     event.respondWith(
       fetch(request).catch(
-        () =>
-          new Response(OFFLINE_HTML, {
+        async () => {
+          const clients = await self.clients.matchAll({
+            type: "window",
+            includeUncontrolled: true
+          });
+          clients.forEach((client) => {
+            client.postMessage({ type: "gateway-unreachable" });
+          });
+          return new Response(OFFLINE_HTML, {
             status: 503,
             headers: {
               "Content-Type": "text/html; charset=utf-8",
               "Cache-Control": "no-store"
             }
-          })
+          });
+        }
       )
     );
     return;

@@ -171,6 +171,30 @@ in {
       description = "Peer IPs allowed to supply trusted X-Forwarded-* headers.";
     };
 
+    keepAwakeCommand = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = "Optional command to run when keep-awake is requested (receives seconds as argument).";
+    };
+
+    keepAwakeMaxSecs = lib.mkOption {
+      type = lib.types.int;
+      default = 14400;
+      description = "Maximum keep-awake duration in seconds.";
+    };
+
+    wakeMaxStarts = lib.mkOption {
+      type = lib.types.int;
+      default = 3;
+      description = "Maximum wake starts per IP within the wake window.";
+    };
+
+    wakeWindowSecs = lib.mkOption {
+      type = lib.types.int;
+      default = 300;
+      description = "Rate-limit window for wake starts in seconds.";
+    };
+
     externalOrigin = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -240,7 +264,11 @@ in {
           "WAKEPROXY_LOGIN_MAX_TRACKED_IPS=${toString cfg.loginMaxTrackedIps}"
           "WAKEPROXY_TRUST_PROXY_HEADERS=${lib.boolToString cfg.trustProxyHeaders}"
           "WAKEPROXY_TRUSTED_PROXY_IPS=${lib.concatStringsSep "," cfg.trustedProxyIps}"
-        ] ++ lib.optional (cfg.externalOrigin != null) "WAKEPROXY_EXTERNAL_ORIGIN=${cfg.externalOrigin}";
+          "WAKEPROXY_WAKE_MAX_STARTS=${toString cfg.wakeMaxStarts}"
+          "WAKEPROXY_WAKE_WINDOW_SECS=${toString cfg.wakeWindowSecs}"
+        ] ++ lib.optional (cfg.externalOrigin != null) "WAKEPROXY_EXTERNAL_ORIGIN=${cfg.externalOrigin}"
+          ++ lib.optional (cfg.keepAwakeCommand != null) "WAKEPROXY_KEEP_AWAKE_COMMAND=${cfg.keepAwakeCommand}"
+          ++ lib.optional (cfg.keepAwakeCommand != null) "WAKEPROXY_KEEP_AWAKE_MAX_SECS=${toString cfg.keepAwakeMaxSecs}";
         EnvironmentFile = [cfg.passwordHashFile];
 
         NoNewPrivileges = true;

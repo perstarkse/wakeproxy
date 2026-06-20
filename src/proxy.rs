@@ -36,6 +36,17 @@ pub enum ProxyError {
     UpstreamRequest(#[from] hyper_util::client::legacy::Error),
 }
 
+impl ProxyError {
+    pub fn map_user_message(&self) -> &str {
+        match self {
+            ProxyError::InvalidUpstreamUri { .. } => "The request could not be processed.",
+            ProxyError::UpstreamRequest(_) => {
+                "The upstream service is not responding. It may still be waking up."
+            }
+        }
+    }
+}
+
 impl ProxyService {
     pub fn new(config: std::sync::Arc<Config>, client: Client<HttpConnector, Body>) -> Self {
         Self { config, client }
@@ -174,8 +185,8 @@ fn strip_gateway_session_cookie(headers: &mut HeaderMap) {
             !part
                 .split_once('=')
                 .map(|(name, _)| {
-                    name.trim()
-                        .eq_ignore_ascii_case(GATEWAY_SESSION_COOKIE_NAME)
+                    let name = name.trim().strip_prefix("__Host-").unwrap_or(name.trim());
+                    name.eq_ignore_ascii_case(GATEWAY_SESSION_COOKIE_NAME)
                 })
                 .unwrap_or(false)
         })
