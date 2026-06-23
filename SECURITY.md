@@ -4,7 +4,7 @@
 
 Please do not open a public issue for security-sensitive bugs.
 
-Instead, report the problem privately to the maintainer with:
+Instead, report the problem privately via [GitHub Security Advisories](https://github.com/perstarkse/wakeproxy/security/advisories/new) with:
 
 - a short description of the issue
 - the affected version or commit

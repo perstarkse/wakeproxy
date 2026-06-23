@@ -12,17 +12,13 @@ This project aims to stay small and operationally simple.
 
 ## Local workflow
 
-Run the main checks before opening a change:
+Run the CI gate before opening a change:
 
 ```bash
-nix develop --impure -c devenv test
+nix flake check
 ```
 
-For the local end-to-end smoke flow:
-
-```bash
-./scripts/e2e-local.sh
-```
+This runs Rust checks and all CI NixOS VM tests (unit + integration). See `nix/tests/README.md` for the matrix and how to run individual checks.
 
 ## Change style
 

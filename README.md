@@ -94,15 +94,13 @@ cargo run
 
 ## Development environment
 
-Nix flake dev shell (devenv): Rust toolchain, coverage, and pre-commit hooks.
+Nix flake dev shell: fenix Rust toolchain and git hooks (fmt, clippy, tests, coverage) install on first `nix develop` and run on commit.
 
 With [direnv](https://direnv.net/) + [nix-direnv](https://github.com/nix-community/nix-direnv), `cd` into the repo loads the shell (see `.envrc`). Manual entry:
 
 ```bash
-nix develop --impure
+nix develop
 ```
-
-Plain `nix develop` fails: devenv needs the checkout path at eval time. Use `--impure` (or `--no-pure-eval`).
 
 ## Local run
 
@@ -110,46 +108,32 @@ Plain `nix develop` fails: devenv needs the checkout path at eval time. Use `--i
 cargo run
 ```
 
-## Tests
+## Verification
+
+CI and the main local gate:
 
 ```bash
-cargo test
+nix flake check
 ```
 
-## Coverage
+This runs Rust checks (fmt, clippy, tests, 90% line coverage) and NixOS VM tests (unit + integration). See `nix/tests/README.md` for the full matrix.
 
-Run coverage in the dev shell (same threshold as hooks):
+To run only the Rust checks:
 
 ```bash
-cargo llvm-cov --workspace --all-features --summary-only --fail-under-lines 90
+nix build .#checks.x86_64-linux.rust
 ```
 
-## Pre-commit checks
-
-`devenv test` runs the hook suite (`fmt`, `clippy`, `test`, coverage, local e2e smoke):
+To run a single VM integration test:
 
 ```bash
-devenv test
+nix build .#checks.x86_64-linux.vm-integration-proxy-wake-ssh
 ```
 
-For verbose per-hook output (commands, logs, durations), run:
+To run only VM unit tests:
 
 ```bash
-prek run --all-files -v
-```
-
-## Local E2E Smoke Test
-
-Run a full local flow with mock upstream on port `6994`, login, proxy, and logout verification:
-
-```bash
-./scripts/e2e-local.sh
-```
-
-Optional overrides:
-
-```bash
-UPSTREAM_PORT=6994 GATEWAY_PORT=18080 PASSWORD=my-test-password ./scripts/e2e-local.sh
+nix build .#checks.x86_64-linux.vm-unit-module-smoke
 ```
 
 ## systemd deployment

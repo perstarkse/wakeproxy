@@ -10,9 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  nix:
+  rust:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,5 +19,36 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@v31
 
-      - name: Nix flake check
-        run: nix flake check --impure
+      - name: Rust checks
+        run: nix build .#checks.x86_64-linux.rust
+
+  vm-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: VM unit tests
+        run: |
+          nix build .#checks.x86_64-linux.vm-unit-module-smoke
+          nix build .#checks.x86_64-linux.vm-unit-keep-awake-helper
+          nix build .#checks.x86_64-linux.vm-unit-keep-awake-local
+
+  vm-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: VM integration tests
+        run: |
+          nix build .#checks.x86_64-linux.vm-integration-proxy-wake-flow
+          nix build .#checks.x86_64-linux.vm-integration-proxy-wake-ssh
+          nix build .#checks.x86_64-linux.vm-integration-firewall-sources
+          nix build .#checks.x86_64-linux.vm-integration-ssh-known-hosts

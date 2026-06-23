@@ -6,7 +6,7 @@ let
   '';
 in
 pkgs.testers.runNixOSTest {
-  name = "wakeproxy-auto-suspend-interaction";
+  name = "wakeproxy-vm-optional-auto-suspend";
 
   nodes.machine = { config, ... }: {
     imports = [

@@ -2,6 +2,10 @@
 name = "wakeproxy"
 version = "0.1.0"
 edition = "2024"
+description = "Password-protected reverse proxy with explicit Wake-on-LAN for a single upstream"
+license = "MIT"
+repository = "https://github.com/perstarkse/wakeproxy"
+homepage = "https://github.com/perstarkse/wakeproxy"
 
 [dependencies]
 argon2 = "0.5"

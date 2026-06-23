@@ -294,13 +294,13 @@ in {
 
     networking.firewall = {
       allowedTCPPorts = lib.mkIf (cfg.openFirewall && cfg.allowedFirewallSources == []) [cfg.port];
-      extraInputRules = lib.mkIf (cfg.allowedFirewallSources != []) (lib.mkAfter ''
+      extraInputRules = lib.mkIf (cfg.allowedFirewallSources != []) ''
         ${firewallSourceRules}
         tcp dport ${toString cfg.port} drop
-      '');
-      extraCommands = lib.mkIf (!config.networking.nftables.enable && cfg.allowedFirewallSources != []) (lib.mkAfter ''
+      '';
+      extraCommands = lib.mkIf (!config.networking.nftables.enable && cfg.allowedFirewallSources != []) ''
         ${mkFirewallExtraCommands cfg.port cfg.allowedFirewallSources}
-      '');
+      '';
     };
   };
 }

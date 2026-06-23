@@ -6,15 +6,34 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ## [Unreleased]
 
+### Added
+
+- `checks.<system>.rust` flake check: fmt, clippy, tests, and 90% line coverage (same gates as git hooks)
+- Overhauled NixOS VM tests under `nix/tests/` with `vm-unit-*` and `vm-integration-*` naming
+- `vm-integration-proxy-wake-ssh`: combined multi-node wake flow and remote SSH keep-awake
+- `vm-integration-firewall-sources`: `allowedFirewallSources` firewall rules
+- `vm-integration-ssh-known-hosts`: strict SSH host key checking for remote keep-awake
+- `vm-unit-module-smoke`: fast NixOS module and systemd wiring smoke test
+- Shared VM test fixtures in `nix/tests/lib/`
+
 ### Changed
 
 - Drop the `test` CI job and remove `scripts/` entirely;
-- Remove `e2e-local` pre-commit hook (deprecated in favour of the NixOS VM e2e test in `nix/tests/deployment-e2e.nix`)
-- Fold the devenv dev shell into `flake.nix`; use `nix develop --impure` instead of the standalone devenv CLI entry point
-- Align the dev shell on the flake's `nixos-unstable` nixpkgs pin (replacing `devenv-nixpkgs/rolling`).
-- Run GitHub Actions via `nix flake check --impure` (dropped the separate `devenv test` job)
-- Drop devenv Cachix `nixConfig` substituters so `direnv`/`nix develop` do not prompt for untrusted flake settings
-- Quiet `.envrc` loading and suppress direnv/devenv  enter-shell noise after hooks are installed
+- Remove `e2e-local` pre-commit hook (deprecated in favour of NixOS VM tests in `nix/tests/`)
+- Replace devenv dev shell with `pkgs.mkShell` + git-hooks.nix; `nix develop` no longer requires `--impure`
+- Share fenix Rust toolchain config between dev shell and `checks.rust` via `nix/rust-env.nix`
+- Run GitHub Actions as parallel `rust`, `vm-unit`, and `vm-integration` jobs (replacing a single `nix flake check` step)
+- Rename `deployment-e2e` to `vm-integration-proxy-wake-flow`; merge `keep-awake-ssh` into `vm-integration-proxy-wake-ssh`
+- Quiet `.envrc` loading after git hooks are installed
+
+### Fixed
+
+- VM test networking: use NixOS test auto-assigned `192.168.1.<nodeNumber>` IPs via `network.nodeIp` instead of hardcoded addresses that the test harness overwrites
+
+### Removed
+
+- devenv flake input and `.devenv` state directory
+- `deployment-e2e`, `keep-awake-ssh`, `keep-awake-debug` VM tests (replaced by the overhauled suite)
 
 ## [0.1.0] - 2026-03-10
 
