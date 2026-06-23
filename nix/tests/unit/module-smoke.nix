@@ -20,6 +20,7 @@ pkgs.testers.runNixOSTest {
         passwordHashFile = secrets.passwordHashFile;
         upstreamHost = "127.0.0.1";
         listenAddress = "127.0.0.1";
+        wolBroadcastIp = "127.0.0.1";
         extra = {
           upstreamPort = 3000;
         };

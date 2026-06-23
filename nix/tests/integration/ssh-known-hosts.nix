@@ -4,6 +4,8 @@ let
   network = import ../lib/network.nix;
   sshKeys = import ../lib/ssh-keys.nix { inherit pkgs; };
   targetSim = import ../lib/target-sim.nix { inherit pkgs; };
+  nodeNames = [ "proxy" "target" ];
+  targetIp = network.nodeIp "target" nodeNames;
 in
 pkgs.testers.runNixOSTest {
   name = "wakeproxy-vm-integration-ssh-known-hosts";
@@ -21,6 +23,7 @@ pkgs.testers.runNixOSTest {
           services.wakeproxy = import ../lib/proxy-module.nix {
             passwordHashFile = secrets.passwordHashFile;
             listenAddress = "127.0.0.1";
+            wolBroadcastIp = targetIp;
             keepAwake = {
               maxDurationSeconds = 30;
               remoteSsh = {

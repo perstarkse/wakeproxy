@@ -3,6 +3,8 @@ let
   secrets = import ../lib/secrets.nix { inherit pkgs; };
   network = import ../lib/network.nix;
   targetSim = import ../lib/target-sim.nix { inherit pkgs; };
+  nodeNames = [ "proxy" "target" ];
+  targetIp = network.nodeIp "target" nodeNames;
 in
 pkgs.testers.runNixOSTest {
   name = "wakeproxy-vm-integration-proxy-wake-flow";
@@ -16,6 +18,7 @@ pkgs.testers.runNixOSTest {
           environment.systemPackages = with pkgs; [ curl jq python3 ];
           services.wakeproxy = import ../lib/proxy-module.nix {
             passwordHashFile = secrets.passwordHashFile;
+            wolBroadcastIp = targetIp;
             extra = {
               keepAwakeCommand = "/bin/true";
               keepAwakeMaxSecs = 3600;

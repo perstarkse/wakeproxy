@@ -11,6 +11,7 @@ let
   ];
   proxyIp = network.nodeIp "proxy" nodeNames;
   clientAllowedIp = network.nodeIp "clientAllowed" nodeNames;
+  targetIp = network.nodeIp "target" nodeNames;
 in
 pkgs.testers.runNixOSTest {
   name = "wakeproxy-vm-integration-firewall-sources";
@@ -25,6 +26,7 @@ pkgs.testers.runNixOSTest {
 
           services.wakeproxy = import ../lib/proxy-module.nix {
             passwordHashFile = secrets.passwordHashFile;
+            wolBroadcastIp = targetIp;
             extra = {
               allowedFirewallSources = [ clientAllowedIp ];
             };

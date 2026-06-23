@@ -8,6 +8,7 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ### Added
 
+- GitHub Actions Nix caching via [Magic Nix Cache](https://github.com/DeterminateSystems/magic-nix-cache-action): `cache-warmup` job primes shared packages, then parallel jobs restore from the Actions cache
 - `checks.<system>.rust` flake check: fmt, clippy, tests, and 90% line coverage (same gates as git hooks)
 - Overhauled NixOS VM tests under `nix/tests/` with `vm-unit-*` and `vm-integration-*` naming
 - `vm-integration-proxy-wake-ssh`: combined multi-node wake flow and remote SSH keep-awake
@@ -29,6 +30,8 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 ### Fixed
 
 - VM test networking: use NixOS test auto-assigned `192.168.1.<nodeNumber>` IPs via `network.nodeIp` instead of hardcoded addresses that the test harness overwrites
+- `vm-integration-proxy-wake-ssh`: wait for proxy→target connectivity before WoL; derive `wolBroadcastIp` from `nodeIp`
+- WoL test listener ignores non-magic UDP packets instead of exiting on the first datagram
 
 ### Removed
 

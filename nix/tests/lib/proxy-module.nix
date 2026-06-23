@@ -1,16 +1,16 @@
 {
   passwordHashFile,
   upstreamHost ? "target",
+  wolBroadcastIp,
   listenAddress ? "0.0.0.0",
   keepAwake ? {},
   extra ? {},
 }: {
   enable = true;
-  inherit listenAddress upstreamHost;
+  inherit listenAddress upstreamHost wolBroadcastIp;
   port = 8091;
   upstreamPort = 3000;
   wolMac = "aa:bb:cc:dd:ee:ff";
-  wolBroadcastIp = "192.168.1.2";
   wolBroadcastPort = 4009;
   wakeTimeout = 20;
   pollInterval = 1;

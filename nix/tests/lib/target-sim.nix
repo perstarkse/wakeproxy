@@ -49,13 +49,15 @@
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(('0.0.0.0', ${toString wolPort}))
-    packet, addr = sock.recvfrom(4096)
-    with log_path.open('a', encoding='utf-8') as log:
-        log.write(f'WOL from {addr[0]}:{addr[1]} bytes={len(packet)}\n')
-        log.write(packet.hex() + '\n')
-    if not packet.startswith(magic_prefix):
-        raise SystemExit('missing WoL magic prefix')
-    (state_dir / 'wol.received').write_text('1', encoding='utf-8')
+    while True:
+        packet, addr = sock.recvfrom(4096)
+        with log_path.open('a', encoding='utf-8') as log:
+            log.write(f'WOL from {addr[0]}:{addr[1]} bytes={len(packet)}\n')
+            log.write(packet.hex() + '\n')
+        if not packet.startswith(magic_prefix):
+            continue
+        (state_dir / 'wol.received').write_text('1', encoding='utf-8')
+        break
   '';
 
   bringUpstreamSh = pkgs.writeShellScript "wakeproxy-bring-upstream" ''

@@ -6,11 +6,15 @@ on:
       - main
   pull_request:
 
+# magic-nix-cache writes to the GitHub Actions cache API between workflow runs.
 permissions:
   contents: read
+  actions: write
 
 jobs:
-  rust:
+  # Prime the GHA-backed Nix cache with flake outputs shared by the parallel jobs.
+  # magic-nix-cache uploads at job end; downstream jobs need this to finish first.
+  cache-warmup:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -18,11 +22,38 @@ jobs:
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Build shared flake outputs
+        run: |
+          nix build .#packages.x86_64-linux.default .#packages.x86_64-linux.wakeproxy-keep-awake-target
+
+  rust:
+    needs: cache-warmup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-flakehub: false
+          use-gha-cache: true
 
       - name: Rust checks
         run: nix build .#checks.x86_64-linux.rust
 
   vm-unit:
+    needs: cache-warmup
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -30,6 +61,12 @@ jobs:
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-flakehub: false
+          use-gha-cache: true
 
       - name: VM unit tests
         run: |
@@ -38,6 +75,7 @@ jobs:
           nix build .#checks.x86_64-linux.vm-unit-keep-awake-local
 
   vm-integration:
+    needs: cache-warmup
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -45,6 +83,12 @@ jobs:
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-flakehub: false
+          use-gha-cache: true
 
       - name: VM integration tests
         run: |

@@ -4,6 +4,8 @@ let
   network = import ../lib/network.nix;
   sshKeys = import ../lib/ssh-keys.nix { inherit pkgs; };
   targetSim = import ../lib/target-sim.nix { inherit pkgs; };
+  nodeNames = [ "proxy" "target" ];
+  targetIp = network.nodeIp "target" nodeNames;
 in
 pkgs.testers.runNixOSTest {
   name = "wakeproxy-vm-integration-proxy-wake-ssh";
@@ -21,6 +23,7 @@ pkgs.testers.runNixOSTest {
           services.wakeproxy = import ../lib/proxy-module.nix {
             passwordHashFile = secrets.passwordHashFile;
             listenAddress = "127.0.0.1";
+            wolBroadcastIp = targetIp;
             keepAwake = {
               maxDurationSeconds = 30;
               remoteSsh = {
@@ -66,6 +69,9 @@ pkgs.testers.runNixOSTest {
     target.succeed("${targetSim.initStateDir}")
     target.succeed("${targetSim.startDelayedUpstream}")
     target.wait_until_succeeds("${targetSim.waitForWolListener}")
+
+    proxy.wait_until_succeeds("ping -c1 target >/dev/null")
+    proxy.wait_until_succeeds("curl -fsS http://127.0.0.1:8091/_health >/dev/null")
 
     proxy.succeed("curl -sS -o /dev/null -D /tmp/login-headers -c /tmp/wake.cookies -X POST -H 'Origin: http://127.0.0.1:8091' -H 'Referer: http://127.0.0.1:8091/_auth/login?next=%2Fdemo' -d 'password=${secrets.testPassword}&next=%2Fdemo' http://127.0.0.1:8091/_auth/login")
     proxy.succeed("grep -F '303 See Other' /tmp/login-headers")
