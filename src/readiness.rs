@@ -75,6 +75,9 @@ impl SystemReadinessProbe {
     }
 
     async fn command_ping(&self) -> bool {
+        // GNU ping flags: one probe with a 1-second deadline. Linux-only
+        // syntax; if the binary is missing or rejects the flags, the TCP
+        // connect fallback in `ping` covers reachability.
         match Command::new(&self.ping_command)
             .arg("-c")
             .arg("1")

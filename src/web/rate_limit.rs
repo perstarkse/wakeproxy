@@ -24,23 +24,20 @@ impl WakeRateLimiter {
     pub(crate) async fn check_and_register(&self, ip: IpAddr) -> bool {
         let mut map = self.inner.lock().await;
         let now = Instant::now();
-        let window = self.window;
+
+        // Prune expired entries on every call so memory stays bounded by IPs
+        // seen inside the window (mirrors the login-attempt tracker).
+        map.retain(|_, timestamps| {
+            timestamps.retain(|ts| now.duration_since(*ts) <= self.window);
+            !timestamps.is_empty()
+        });
 
         let timestamps = map.entry(ip).or_default();
-        timestamps.retain(|ts| now.duration_since(*ts) <= window);
         timestamps.push(now);
 
         if timestamps.len() > self.max_starts {
             timestamps.pop();
             return false;
-        }
-
-        // Clean up the map periodically to avoid unbounded growth
-        if map.len() > 10_000 {
-            map.retain(|_, timestamps| {
-                timestamps.retain(|ts| now.duration_since(*ts) <= window);
-                !timestamps.is_empty()
-            });
         }
 
         true

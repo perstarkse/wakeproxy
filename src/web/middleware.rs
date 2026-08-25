@@ -5,7 +5,7 @@ use axum::http::header::RETRY_AFTER;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::IntoResponse;
-use tracing::info;
+use tracing::debug;
 
 use super::AppState;
 use super::security::{extract_client_ip, should_trust_proxy, websocket_origin_allowed};
@@ -89,7 +89,7 @@ pub(crate) async fn proxy_handler(
         return response;
     }
 
-    info!(
+    debug!(
         auth = true,
         "upstream assumed ready by readiness gate, proxying request"
     );

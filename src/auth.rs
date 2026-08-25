@@ -182,13 +182,6 @@ impl AuthService {
             return Some(locked_until - now);
         }
 
-        prune_attempts(
-            &mut attempts,
-            now,
-            self.login_window,
-            self.login_max_tracked_ips,
-        );
-
         None
     }
 
@@ -272,11 +265,7 @@ pub fn parse_cookie(headers: &HeaderMap, key: &str) -> Option<String> {
     Cookie::split_parse(cookie_header)
         .filter_map(Result::ok)
         .find_map(|cookie| {
-            let name = cookie
-                .name()
-                .strip_prefix("__Host-")
-                .unwrap_or(cookie.name());
-            if name == key {
+            if cookie.name() == key {
                 Some(cookie.value().to_string())
             } else {
                 None

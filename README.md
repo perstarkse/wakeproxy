@@ -79,7 +79,7 @@ cargo run
 - The gateway strips its own `wakeproxy_session` cookie before forwarding upstream requests, so upstream services do not receive gateway auth sessions.
 - iOS soft redirects only run for safe targets (relative paths or `http/https` URLs).
 - Session state is memory-backed by design; restarting the process clears active sessions and login-attempt tracking.
-- Use a randomly generated session secret of at least 32 bytes.
+- Use a randomly generated session secret; the gateway enforces a minimum of 16 characters, but 32+ random bytes are recommended.
 - Websocket upgrades with an `Origin` header are accepted only when the origin matches the configured external origin or request host.
 
 ## Readiness model

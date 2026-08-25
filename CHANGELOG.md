@@ -29,6 +29,13 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ### Fixed
 
+- Wake status and poll responses no longer report a synthetic cycle id `0` when the upstream was found ready by direct probing; `cycle_id` is now absent in that case, and the ready cache still suppresses redundant WoL packets
+- Wake rate limiter prunes expired entries on every request so tracked IPs cannot linger after a burst (mirrors the login-attempt tracker)
+- Removed a duplicate login-attempt prune pass on every lockout check
+- Per-request readiness-gate log demoted from `info` to `debug` to avoid duplicating trace-layer request logs
+- Cookie parsing and gateway-cookie stripping no longer accept a `__Host-`-prefixed alias of the session cookie that the gateway never issues
+- README: documented the enforced 16-character session-secret minimum alongside the 32-byte recommendation
+- Split wake coordinator unit tests into `src/wake/tests.rs`, bringing `src/wake.rs` under 650 lines
 - VM test networking: use NixOS test auto-assigned `192.168.1.<nodeNumber>` IPs via `network.nodeIp` instead of hardcoded addresses that the test harness overwrites
 - `vm-integration-proxy-wake-ssh`: wait for proxy→target connectivity before WoL; derive `wolBroadcastIp` from `nodeIp`
 - WoL test listener ignores non-magic UDP packets instead of exiting on the first datagram

@@ -185,8 +185,8 @@ fn strip_gateway_session_cookie(headers: &mut HeaderMap) {
             !part
                 .split_once('=')
                 .map(|(name, _)| {
-                    let name = name.trim().strip_prefix("__Host-").unwrap_or(name.trim());
-                    name.eq_ignore_ascii_case(GATEWAY_SESSION_COOKIE_NAME)
+                    name.trim()
+                        .eq_ignore_ascii_case(GATEWAY_SESSION_COOKIE_NAME)
                 })
                 .unwrap_or(false)
         })
