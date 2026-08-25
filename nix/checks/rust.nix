@@ -5,8 +5,9 @@
   system,
 }:
 let
-  rust = import ../rust-env.nix {inherit inputs pkgs system;};
-in {
+  rust = import ../rust-env.nix { inherit inputs pkgs system; };
+in
+{
   rust = pkgs.rustPlatform.buildRustPackage {
     pname = "wakeproxy-rust-checks";
     version = self.packages.${system}.default.version;
@@ -37,8 +38,6 @@ in {
 
     checkPhase = ''
       runHook preCheck
-
-      cargo fmt --all -- --check
 
       cargo clippy --workspace --all-targets --all-features -- -D warnings
 

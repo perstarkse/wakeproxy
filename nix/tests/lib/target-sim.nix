@@ -4,7 +4,8 @@
   stateDir ? "/tmp/wakeproxy-e2e",
   wolPort ? 4009,
   upstreamPort ? 3000,
-}: let
+}:
+let
   upstreamPy = pkgs.writeText "wakeproxy-test-upstream.py" ''
     import http.server
     import pathlib
@@ -68,8 +69,14 @@
     echo upstream-start-after-wol >> ${stateDir}/wol.log
     exec python3 ${upstreamPy}
   '';
-in {
-  inherit stateDir upstreamPy wolListenerPy bringUpstreamSh;
+in
+{
+  inherit
+    stateDir
+    upstreamPy
+    wolListenerPy
+    bringUpstreamSh
+    ;
 
   initStateDir = "mkdir -p ${stateDir} && : > ${stateDir}/wol.log && : > ${stateDir}/upstream.log";
 

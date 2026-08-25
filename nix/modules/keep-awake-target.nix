@@ -1,9 +1,11 @@
-{self}: {
+{ self }:
+{
   config,
   lib,
   pkgs,
   ...
-}: let
+}:
+let
   cfg = config.services.wakeproxy.keepAwake;
   helperPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.wakeproxy-keep-awake-target;
 
@@ -12,41 +14,46 @@
   '';
 
   sshKnownHostsArgs =
-    if cfg.remoteSsh.hostPublicKey != null
-    then ["-o" "UserKnownHostsFile=${sshKnownHostsFile}"]
-    else ["-o" "UserKnownHostsFile=/dev/null"];
+    if cfg.remoteSsh.hostPublicKey != null then
+      [
+        "-o"
+        "UserKnownHostsFile=${sshKnownHostsFile}"
+      ]
+    else
+      [
+        "-o"
+        "UserKnownHostsFile=/dev/null"
+      ];
 
   sshCommand = pkgs.writeShellApplication {
     name = "wakeproxy-keep-awake-ssh";
-    runtimeInputs = [pkgs.openssh];
+    runtimeInputs = [ pkgs.openssh ];
     text = ''
       set -eu
 
       seconds="''${1:?missing duration seconds}"
-      exec ssh ${lib.escapeShellArgs (
-        [
-          "-i"
-          cfg.remoteSsh.identityFile
-          "-o"
-          "BatchMode=yes"
-          "-o"
-          "IdentitiesOnly=yes"
-          "-o"
-          "StrictHostKeyChecking=${
-            if cfg.remoteSsh.hostPublicKey == null
-            then "accept-new"
-            else "yes"
-          }"
-        ]
-        ++ sshKnownHostsArgs
-        ++ [
-          "-o"
-          "ConnectTimeout=${toString cfg.remoteSsh.connectTimeoutSeconds}"
-          "-p"
-          (toString cfg.remoteSsh.port)
-          "${cfg.remoteSsh.user}@${cfg.remoteSsh.host}"
-        ]
-      )} "$seconds"
+      exec ssh ${
+        lib.escapeShellArgs (
+          [
+            "-i"
+            cfg.remoteSsh.identityFile
+            "-o"
+            "BatchMode=yes"
+            "-o"
+            "IdentitiesOnly=yes"
+            "-o"
+            "StrictHostKeyChecking=${if cfg.remoteSsh.hostPublicKey == null then "accept-new" else "yes"}"
+          ]
+          ++ sshKnownHostsArgs
+          ++ [
+            "-o"
+            "ConnectTimeout=${toString cfg.remoteSsh.connectTimeoutSeconds}"
+            "-p"
+            (toString cfg.remoteSsh.port)
+            "${cfg.remoteSsh.user}@${cfg.remoteSsh.host}"
+          ]
+        )
+      } "$seconds"
     '';
   };
 
@@ -74,7 +81,7 @@
 
   restrictAuthorizedKeys = pkgs.writeShellApplication {
     name = "wakeproxy-restrict-authorized-keys";
-    runtimeInputs = [pkgs.coreutils];
+    runtimeInputs = [ pkgs.coreutils ];
     text = ''
       set -eu
 
@@ -91,7 +98,8 @@
 
   isWakeproxyHost = config.services.wakeproxy.enable && cfg.remoteSsh.host != "";
   isTargetHost = cfg.sshTarget.enable;
-in {
+in
+{
   options.services.wakeproxy.keepAwake = {
     package = lib.mkOption {
       type = lib.types.package;
@@ -173,7 +181,7 @@ in {
 
       authorizedKeys = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default = [];
+        default = [ ];
         description = "Public SSH keys allowed to request keep-awake leases. Forced-command restrictions are added automatically.";
       };
 
@@ -188,7 +196,7 @@ in {
   config = lib.mkMerge [
     (lib.mkIf isWakeproxyHost {
       systemd.services.wake-proxy = {
-        path = [pkgs.openssh];
+        path = [ pkgs.openssh ];
         serviceConfig.Environment = [
           "WAKEPROXY_KEEP_AWAKE_COMMAND=${lib.getExe sshCommand}"
           "WAKEPROXY_KEEP_AWAKE_MAX_SECS=${toString cfg.maxDurationSeconds}"
@@ -197,7 +205,7 @@ in {
     })
 
     (lib.mkIf isTargetHost {
-      environment.systemPackages = [cfg.package];
+      environment.systemPackages = [ cfg.package ];
 
       security.polkit.enable = lib.mkIf cfg.allowInhibitViaPolkit true;
       security.polkit.extraConfig = lib.mkIf cfg.allowInhibitViaPolkit ''
@@ -214,7 +222,7 @@ in {
         });
       '';
 
-      users.groups.${cfg.sshTarget.group} = {};
+      users.groups.${cfg.sshTarget.group} = { };
       users.users.${cfg.sshTarget.user} = {
         isSystemUser = true;
         group = cfg.sshTarget.group;
@@ -227,9 +235,11 @@ in {
         "d /etc/ssh/authorized_keys.d 0755 root root -"
       ];
 
-      system.activationScripts.wakeproxyKeepAwakeAuthorizedKeys = lib.mkIf (cfg.sshTarget.authorizedKeysFile != null) ''
-        ${lib.getExe restrictAuthorizedKeys} ${lib.escapeShellArg cfg.sshTarget.authorizedKeysFile} /etc/ssh/authorized_keys.d/${cfg.sshTarget.user}
-      '';
+      system.activationScripts.wakeproxyKeepAwakeAuthorizedKeys =
+        lib.mkIf (cfg.sshTarget.authorizedKeysFile != null)
+          ''
+            ${lib.getExe restrictAuthorizedKeys} ${lib.escapeShellArg cfg.sshTarget.authorizedKeysFile} /etc/ssh/authorized_keys.d/${cfg.sshTarget.user}
+          '';
     })
   ];
 }

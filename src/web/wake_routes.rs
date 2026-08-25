@@ -16,7 +16,7 @@ use crate::http::{mark_uncacheable, redirect_response};
 use crate::wake::{WakeStartResult, WakeState};
 
 const DEFAULT_KEEP_AWAKE_FOR_SECS: u64 = 900;
-const KEEP_AWAKE_OPTION_SECS: [u64; 4] = [900, 1800, 3600, 14_400];
+const KEEP_AWAKE_OPTION_SECS: [u64; 6] = [900, 1800, 3600, 7200, 10_800, 14_400];
 
 #[derive(serde::Deserialize)]
 pub(crate) struct WakeQuery {

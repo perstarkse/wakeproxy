@@ -1,4 +1,8 @@
-{ self, pkgs, tier ? "ci" }:
+{
+  self,
+  pkgs,
+  tier ? "ci",
+}:
 let
   importTest = path: import path { inherit self pkgs; };
 
@@ -21,8 +25,13 @@ let
 
   ci = unit // integration;
 in
-  if tier == "unit" then unit
-  else if tier == "integration" then integration
-  else if tier == "optional" then optional
-  else if tier == "ci" then ci
-  else ci // optional
+if tier == "unit" then
+  unit
+else if tier == "integration" then
+  integration
+else if tier == "optional" then
+  optional
+else if tier == "ci" then
+  ci
+else
+  ci // optional

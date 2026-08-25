@@ -3,9 +3,10 @@
   upstreamHost ? "target",
   wolBroadcastIp,
   listenAddress ? "0.0.0.0",
-  keepAwake ? {},
-  extra ? {},
-}: {
+  keepAwake ? { },
+  extra ? { },
+}:
+{
   enable = true;
   inherit listenAddress upstreamHost wolBroadcastIp;
   port = 8091;

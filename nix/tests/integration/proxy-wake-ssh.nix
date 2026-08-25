@@ -4,57 +4,62 @@ let
   network = import ../lib/network.nix;
   sshKeys = import ../lib/ssh-keys.nix { inherit pkgs; };
   targetSim = import ../lib/target-sim.nix { inherit pkgs; };
-  nodeNames = [ "proxy" "target" ];
+  nodeNames = [
+    "proxy"
+    "target"
+  ];
   targetIp = network.nodeIp "target" nodeNames;
 in
 pkgs.testers.runNixOSTest {
   name = "wakeproxy-vm-integration-proxy-wake-ssh";
 
   nodes = {
-    proxy =
-      network.mkEth1Node {
-        extraConfig = {
-          imports = [ self.nixosModules.wake-proxy ];
-          networking.firewall.enable = false;
-          environment.systemPackages = [ pkgs.curl pkgs.jq pkgs.python3 ];
+    proxy = network.mkEth1Node {
+      extraConfig = {
+        imports = [ self.nixosModules.wake-proxy ];
+        networking.firewall.enable = false;
+        environment.systemPackages = [
+          pkgs.curl
+          pkgs.jq
+          pkgs.python3
+        ];
 
-          system.activationScripts.wakeproxySshKey = sshKeys.proxyActivationScript;
+        system.activationScripts.wakeproxySshKey = sshKeys.proxyActivationScript;
 
-          services.wakeproxy = import ../lib/proxy-module.nix {
-            passwordHashFile = secrets.passwordHashFile;
-            listenAddress = "127.0.0.1";
-            wolBroadcastIp = targetIp;
-            keepAwake = {
-              maxDurationSeconds = 30;
-              remoteSsh = {
-                host = "target";
-                identityFile = "/var/lib/wake-proxy/keep-awake-ssh-key";
-                hostPublicKey = null;
-                connectTimeoutSeconds = 5;
-              };
-            };
-          };
-        };
-      };
-
-    target =
-      network.mkEth1Node {
-        extraConfig = {
-          imports = [ self.nixosModules.wake-proxy ];
-          networking.firewall.enable = false;
-          environment.systemPackages = [ pkgs.python3 ];
-
-          services.openssh.enable = true;
-
-          services.wakeproxy.keepAwake = {
+        services.wakeproxy = import ../lib/proxy-module.nix {
+          passwordHashFile = secrets.passwordHashFile;
+          listenAddress = "127.0.0.1";
+          wolBroadcastIp = targetIp;
+          keepAwake = {
             maxDurationSeconds = 30;
-            sshTarget = {
-              enable = true;
-              authorizedKeys = [ sshKeys.publicKey ];
+            remoteSsh = {
+              host = "target";
+              identityFile = "/var/lib/wake-proxy/keep-awake-ssh-key";
+              hostPublicKey = null;
+              connectTimeoutSeconds = 5;
             };
           };
         };
       };
+    };
+
+    target = network.mkEth1Node {
+      extraConfig = {
+        imports = [ self.nixosModules.wake-proxy ];
+        networking.firewall.enable = false;
+        environment.systemPackages = [ pkgs.python3 ];
+
+        services.openssh.enable = true;
+
+        services.wakeproxy.keepAwake = {
+          maxDurationSeconds = 30;
+          sshTarget = {
+            enable = true;
+            authorizedKeys = [ sshKeys.publicKey ];
+          };
+        };
+      };
+    };
   };
 
   testScript = ''

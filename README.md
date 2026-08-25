@@ -94,7 +94,15 @@ cargo run
 
 ## Development environment
 
-Nix flake dev shell: fenix Rust toolchain and git hooks (fmt, clippy, tests, coverage) install on first `nix develop` and run on commit.
+Nix flake dev shell: fenix Rust toolchain and git hooks (treefmt, clippy, tests, coverage) install on first `nix develop` and run on commit.
+
+Formatting is owned by [treefmt](https://github.com/numtide/treefmt-nix) (rustfmt for `.rs`, nixfmt for `.nix`) and exposed as the single entrypoint:
+
+```bash
+nix fmt
+```
+
+The same configuration runs as a pre-commit hook and as a `format` check in `nix flake check`.
 
 With [direnv](https://direnv.net/) + [nix-direnv](https://github.com/nix-community/nix-direnv), `cd` into the repo loads the shell (see `.envrc`). Manual entry:
 
@@ -116,12 +124,24 @@ CI and the main local gate:
 nix flake check
 ```
 
-This runs Rust checks (fmt, clippy, tests, 90% line coverage) and NixOS VM tests (unit + integration). See `nix/tests/README.md` for the full matrix.
+This runs the treefmt `format` check, Rust checks (clippy, tests, 90% line coverage), and NixOS VM tests (unit + integration). See `nix/tests/README.md` for the full matrix.
+
+Formatting can be applied with:
+
+```bash
+nix fmt
+```
 
 To run only the Rust checks:
 
 ```bash
 nix build .#checks.x86_64-linux.rust
+```
+
+To run only the format check:
+
+```bash
+nix build .#checks.x86_64-linux.format
 ```
 
 To run a single VM integration test:
@@ -154,12 +174,17 @@ sudo mkdir -p /etc/wakeproxy /var/lib/wakeproxy
 sudo chown -R wakeproxy:wakeproxy /var/lib/wakeproxy
 ```
 
-Install the binary and unit file:
+Install the binary and unit file. With Nix, build the release binary first
+(and the full release archive if you want the tarball + checksum):
 
 ```bash
-sudo install -m 0755 target/release/wakeproxy /usr/local/bin/wakeproxy
+nix build .#default
+sudo install -m 0755 result/bin/wakeproxy /usr/local/bin/wakeproxy
 sudo install -m 0644 examples/wakeproxy.service /etc/systemd/system/wakeproxy.service
 ```
+
+Releases from CI bundle the same artifacts via `nix build .#release-archive`
+(`result/wakeproxy-linux-x86_64.tar.gz` plus its `.sha256`).
 
 Create `/etc/wakeproxy/wakeproxy.env` with your real values:
 

@@ -17,46 +17,45 @@ pkgs.testers.runNixOSTest {
   name = "wakeproxy-vm-integration-firewall-sources";
 
   nodes = {
-    proxy =
-      network.mkEth1Node {
-        extraConfig = {
-          imports = [ self.nixosModules.wake-proxy ];
-          networking.firewall.enable = true;
-          environment.systemPackages = with pkgs; [ curl python3 ];
+    proxy = network.mkEth1Node {
+      extraConfig = {
+        imports = [ self.nixosModules.wake-proxy ];
+        networking.firewall.enable = true;
+        environment.systemPackages = with pkgs; [
+          curl
+          python3
+        ];
 
-          services.wakeproxy = import ../lib/proxy-module.nix {
-            passwordHashFile = secrets.passwordHashFile;
-            wolBroadcastIp = targetIp;
-            extra = {
-              allowedFirewallSources = [ clientAllowedIp ];
-            };
+        services.wakeproxy = import ../lib/proxy-module.nix {
+          passwordHashFile = secrets.passwordHashFile;
+          wolBroadcastIp = targetIp;
+          extra = {
+            allowedFirewallSources = [ clientAllowedIp ];
           };
         };
       };
+    };
 
-    target =
-      network.mkEth1Node {
-        extraConfig = {
-          networking.firewall.enable = false;
-          environment.systemPackages = [ pkgs.python3 ];
-        };
+    target = network.mkEth1Node {
+      extraConfig = {
+        networking.firewall.enable = false;
+        environment.systemPackages = [ pkgs.python3 ];
       };
+    };
 
-    clientAllowed =
-      network.mkEth1Node {
-        extraConfig = {
-          networking.firewall.enable = false;
-          environment.systemPackages = [ pkgs.curl ];
-        };
+    clientAllowed = network.mkEth1Node {
+      extraConfig = {
+        networking.firewall.enable = false;
+        environment.systemPackages = [ pkgs.curl ];
       };
+    };
 
-    clientDenied =
-      network.mkEth1Node {
-        extraConfig = {
-          networking.firewall.enable = false;
-          environment.systemPackages = [ pkgs.curl ];
-        };
+    clientDenied = network.mkEth1Node {
+      extraConfig = {
+        networking.firewall.enable = false;
+        environment.systemPackages = [ pkgs.curl ];
       };
+    };
   };
 
   testScript = ''

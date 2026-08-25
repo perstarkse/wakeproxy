@@ -1,25 +1,30 @@
-{self}: {
+{ self }:
+{
   config,
   lib,
   pkgs,
   ...
-}: let
+}:
+let
   cfg = config.services.wakeproxy;
-  firewallSourceRules = lib.concatMapStringsSep "\n" (source:
-    if builtins.match ".*:.*" source != null
-    then "ip6 saddr ${source} tcp dport ${toString cfg.port} accept"
-    else "ip saddr ${source} tcp dport ${toString cfg.port} accept")
-  cfg.allowedFirewallSources;
-  mkFirewallExtraCommands = port: sources: let
-    allowRules =
-      map (
+  firewallSourceRules = lib.concatMapStringsSep "\n" (
+    source:
+    if builtins.match ".*:.*" source != null then
+      "ip6 saddr ${source} tcp dport ${toString cfg.port} accept"
+    else
+      "ip saddr ${source} tcp dport ${toString cfg.port} accept"
+  ) cfg.allowedFirewallSources;
+  mkFirewallExtraCommands =
+    port: sources:
+    let
+      allowRules = map (
         source:
-          if builtins.match ".*:.*" source != null
-          then "${pkgs.iptables}/bin/ip6tables -A nixos-fw -p tcp -s ${source} --dport ${toString port} -j ACCEPT"
-          else "${pkgs.iptables}/bin/iptables -A nixos-fw -p tcp -s ${source} --dport ${toString port} -j ACCEPT"
-      )
-      sources;
-  in
+        if builtins.match ".*:.*" source != null then
+          "${pkgs.iptables}/bin/ip6tables -A nixos-fw -p tcp -s ${source} --dport ${toString port} -j ACCEPT"
+        else
+          "${pkgs.iptables}/bin/iptables -A nixos-fw -p tcp -s ${source} --dport ${toString port} -j ACCEPT"
+      ) sources;
+    in
     lib.concatStringsSep "\n" (
       allowRules
       ++ [
@@ -27,9 +32,10 @@
         "${pkgs.iptables}/bin/ip6tables -A nixos-fw -p tcp --dport ${toString port} -j DROP"
       ]
     );
-in {
+in
+{
   imports = [
-    (import ./keep-awake-target.nix {inherit self;})
+    (import ./keep-awake-target.nix { inherit self; })
   ];
 
   options.services.wakeproxy = {
@@ -167,7 +173,7 @@ in {
 
     trustedProxyIps = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [];
+      default = [ ];
       description = "Peer IPs allowed to supply trusted X-Forwarded-* headers.";
     };
 
@@ -215,8 +221,8 @@ in {
 
     allowedFirewallSources = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [];
-      example = ["10.0.0.1"];
+      default = [ ];
+      example = [ "10.0.0.1" ];
       description = "Source IPs/CIDRs allowed to access wakeproxy. When non-empty, only these sources are accepted.";
     };
   };
@@ -227,14 +233,14 @@ in {
       inherit (cfg) group;
     };
 
-    users.groups.${cfg.group} = {};
+    users.groups.${cfg.group} = { };
 
     systemd.services.wake-proxy = {
       description = "Wake-on-LAN web proxy";
-      wantedBy = ["multi-user.target"];
-      after = ["network-online.target"];
-      wants = ["network-online.target"];
-      path = [pkgs.iputils];
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+      path = [ pkgs.iputils ];
 
       serviceConfig = {
         Type = "simple";
@@ -266,10 +272,15 @@ in {
           "WAKEPROXY_TRUSTED_PROXY_IPS=${lib.concatStringsSep "," cfg.trustedProxyIps}"
           "WAKEPROXY_WAKE_MAX_STARTS=${toString cfg.wakeMaxStarts}"
           "WAKEPROXY_WAKE_WINDOW_SECS=${toString cfg.wakeWindowSecs}"
-        ] ++ lib.optional (cfg.externalOrigin != null) "WAKEPROXY_EXTERNAL_ORIGIN=${cfg.externalOrigin}"
-          ++ lib.optional (cfg.keepAwakeCommand != null) "WAKEPROXY_KEEP_AWAKE_COMMAND=${cfg.keepAwakeCommand}"
-          ++ lib.optional (cfg.keepAwakeCommand != null) "WAKEPROXY_KEEP_AWAKE_MAX_SECS=${toString cfg.keepAwakeMaxSecs}";
-        EnvironmentFile = [cfg.passwordHashFile];
+        ]
+        ++ lib.optional (cfg.externalOrigin != null) "WAKEPROXY_EXTERNAL_ORIGIN=${cfg.externalOrigin}"
+        ++ lib.optional (
+          cfg.keepAwakeCommand != null
+        ) "WAKEPROXY_KEEP_AWAKE_COMMAND=${cfg.keepAwakeCommand}"
+        ++ lib.optional (
+          cfg.keepAwakeCommand != null
+        ) "WAKEPROXY_KEEP_AWAKE_MAX_SECS=${toString cfg.keepAwakeMaxSecs}";
+        EnvironmentFile = [ cfg.passwordHashFile ];
 
         NoNewPrivileges = true;
         PrivateTmp = true;
@@ -293,14 +304,16 @@ in {
     };
 
     networking.firewall = {
-      allowedTCPPorts = lib.mkIf (cfg.openFirewall && cfg.allowedFirewallSources == []) [cfg.port];
-      extraInputRules = lib.mkIf (cfg.allowedFirewallSources != []) ''
+      allowedTCPPorts = lib.mkIf (cfg.openFirewall && cfg.allowedFirewallSources == [ ]) [ cfg.port ];
+      extraInputRules = lib.mkIf (cfg.allowedFirewallSources != [ ]) ''
         ${firewallSourceRules}
         tcp dport ${toString cfg.port} drop
       '';
-      extraCommands = lib.mkIf (!config.networking.nftables.enable && cfg.allowedFirewallSources != []) ''
-        ${mkFirewallExtraCommands cfg.port cfg.allowedFirewallSources}
-      '';
+      extraCommands =
+        lib.mkIf (!config.networking.nftables.enable && cfg.allowedFirewallSources != [ ])
+          ''
+            ${mkFirewallExtraCommands cfg.port cfg.allowedFirewallSources}
+          '';
     };
   };
 }

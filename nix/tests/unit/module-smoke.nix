@@ -26,7 +26,10 @@ pkgs.testers.runNixOSTest {
         };
       };
 
-      environment.systemPackages = [ pkgs.curl pkgs.python3 ];
+      environment.systemPackages = [
+        pkgs.curl
+        pkgs.python3
+      ];
     };
 
   testScript = ''

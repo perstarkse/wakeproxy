@@ -3,37 +3,42 @@ let
   secrets = import ../lib/secrets.nix { inherit pkgs; };
   network = import ../lib/network.nix;
   targetSim = import ../lib/target-sim.nix { inherit pkgs; };
-  nodeNames = [ "proxy" "target" ];
+  nodeNames = [
+    "proxy"
+    "target"
+  ];
   targetIp = network.nodeIp "target" nodeNames;
 in
 pkgs.testers.runNixOSTest {
   name = "wakeproxy-vm-integration-proxy-wake-flow";
 
   nodes = {
-    proxy =
-      network.mkEth1Node {
-        extraConfig = {
-          imports = [ self.nixosModules.wake-proxy ];
-          networking.firewall.enable = false;
-          environment.systemPackages = with pkgs; [ curl jq python3 ];
-          services.wakeproxy = import ../lib/proxy-module.nix {
-            passwordHashFile = secrets.passwordHashFile;
-            wolBroadcastIp = targetIp;
-            extra = {
-              keepAwakeCommand = "/bin/true";
-              keepAwakeMaxSecs = 3600;
-            };
+    proxy = network.mkEth1Node {
+      extraConfig = {
+        imports = [ self.nixosModules.wake-proxy ];
+        networking.firewall.enable = false;
+        environment.systemPackages = with pkgs; [
+          curl
+          jq
+          python3
+        ];
+        services.wakeproxy = import ../lib/proxy-module.nix {
+          passwordHashFile = secrets.passwordHashFile;
+          wolBroadcastIp = targetIp;
+          extra = {
+            keepAwakeCommand = "/bin/true";
+            keepAwakeMaxSecs = 3600;
           };
         };
       };
+    };
 
-    target =
-      network.mkEth1Node {
-        extraConfig = {
-          networking.firewall.enable = false;
-          environment.systemPackages = [ pkgs.python3 ];
-        };
+    target = network.mkEth1Node {
+      extraConfig = {
+        networking.firewall.enable = false;
+        environment.systemPackages = [ pkgs.python3 ];
       };
+    };
   };
 
   testScript = ''

@@ -1,4 +1,5 @@
-{pkgs}: let
+{ pkgs }:
+let
   privateKey = pkgs.writeText "wakeproxy-keep-awake-test-key" ''
     -----BEGIN OPENSSH PRIVATE KEY-----
     b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
@@ -9,7 +10,8 @@
     -----END OPENSSH PRIVATE KEY-----
   '';
   publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKVust4ieD5/ECcPEUxB7LNqPEtTQ4Uq/agOIIA/TbHq wakeproxy-keep-awake-test";
-in {
+in
+{
   inherit privateKey publicKey;
   proxyActivationScript = ''
     mkdir -p /var/lib/wake-proxy

@@ -8,6 +8,10 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ### Added
 
+- Keep-awake duration dropdown now offers 2-hour and 3-hour presets (15m, 30m, 1h, 2h, 3h, 4h)
+- `.#release-archive` flake package: stages `wakeproxy`, `README.md`, `LICENSE`, and the systemd unit into `wakeproxy-linux-x86_64.tar.gz` with a `.sha256` sidecar
+- `nix fmt` formatter output powered by `treefmt-nix` (rustfmt for `.rs`, nixfmt for `.nix`); same configuration runs as a pre-commit hook and as the `checks.<system>.format` check in `nix flake check`
+- flake-parts structure: `flake.nix` is now the entrypoint, with project logic split into `nix/modules/{context,packages,checks,formatter,dev-shell}.nix`
 - GitHub Actions Nix caching via [Magic Nix Cache](https://github.com/DeterminateSystems/magic-nix-cache-action): `cache-warmup` job primes shared packages, then parallel jobs restore from the Actions cache
 - `checks.<system>.rust` flake check: fmt, clippy, tests, and 90% line coverage (same gates as git hooks)
 - Overhauled NixOS VM tests under `nix/tests/` with `vm-unit-*` and `vm-integration-*` naming
@@ -22,6 +26,7 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - Drop the `test` CI job and remove `scripts/` entirely;
 - Remove `e2e-local` pre-commit hook (deprecated in favour of NixOS VM tests in `nix/tests/`)
 - Replace devenv dev shell with `pkgs.mkShell` + git-hooks.nix; `nix develop` no longer requires `--impure`
+- Release workflow builds through Nix (`nix flake check` + `nix build .#release-archive`), no non-Nix Rust toolchain in CI
 - Share fenix Rust toolchain config between dev shell and `checks.rust` via `nix/rust-env.nix`
 - Run GitHub Actions as parallel `rust`, `vm-unit`, and `vm-integration` jobs (replacing a single `nix flake check` step)
 - Rename `deployment-e2e` to `vm-integration-proxy-wake-flow`; merge `keep-awake-ssh` into `vm-integration-proxy-wake-ssh`
@@ -43,6 +48,8 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 ### Removed
 
 - devenv flake input and `.devenv` state directory
+- Bare `cargo`/`rust-toolchain` steps from `.github/workflows/release.yml`; releases now build via `nix build .#release-archive` after `nix flake check`
+- Duplicate `cargo fmt --all -- --check` from `checks.rust` (formatting is now owned by the treefmt `format` check)
 - `deployment-e2e`, `keep-awake-ssh`, `keep-awake-debug` VM tests (replaced by the overhauled suite)
 
 ## [0.1.0] - 2026-03-10

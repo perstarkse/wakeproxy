@@ -5,11 +5,19 @@
   system,
 }:
 let
-  rust = import ./rust-env.nix {inherit inputs pkgs system;};
+  rust = import ./rust-env.nix { inherit inputs pkgs system; };
+  treefmtEval = inputs.treefmt-nix.lib.evalModule pkgs ./modules/treefmt.nix;
+  treefmt = treefmtEval.config.build.wrapper;
   git-hooks = inputs.git-hooks.lib.${system}.run {
     src = self;
     hooks = {
-      rustfmt.enable = true;
+      treefmt = {
+        enable = true;
+        name = "treefmt";
+        entry = "${treefmt}/bin/treefmt --fail-on-change";
+        language = "system";
+        pass_filenames = false;
+      };
       "cargo-clippy" = {
         enable = true;
         name = "clippy";
@@ -35,7 +43,7 @@ let
   };
 in
 pkgs.mkShell {
-  inputsFrom = [git-hooks];
+  inputsFrom = [ git-hooks ];
 
   packages = with pkgs; [
     rust.rustToolchain
@@ -43,6 +51,7 @@ pkgs.mkShell {
     curl
     cargo-llvm-cov
     rust.llvmTools
+    treefmt
   ];
 
   env = rust.coverageEnv;
