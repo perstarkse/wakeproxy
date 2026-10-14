@@ -71,18 +71,24 @@ impl ProxyService {
         strip_hop_by_hop_headers(req.headers_mut(), is_upgrade);
         strip_gateway_session_cookie(req.headers_mut());
         apply_forwarded_headers(req.headers_mut(), client_ip, trust_incoming_forwarded);
-        req.headers_mut().insert(
-            HOST,
-            HeaderValue::from_str(&upstream_authority(&self.config))
-                .unwrap_or(HeaderValue::from_static("upstream")),
-        );
+        let client_host: Option<HeaderValue> = req
+            .headers()
+            .get(HOST)
+            .cloned()
+            .filter(|value| !value.is_empty());
+        let upstream_host = resolve_upstream_host(req.headers(), &self.config);
+        req.headers_mut().insert(HOST, upstream_host);
 
         let mut upstream_response: Response<Incoming> = self.client.request(req).await?;
 
         let preserve_upgrade_headers =
             is_upgrade && upstream_response.status() == hyper::StatusCode::SWITCHING_PROTOCOLS;
         strip_hop_by_hop_headers(upstream_response.headers_mut(), preserve_upgrade_headers);
-        rewrite_upstream_redirect_location(upstream_response.headers_mut(), &self.config);
+        rewrite_upstream_redirect_location(
+            upstream_response.headers_mut(),
+            &self.config,
+            client_host.as_ref().and_then(|value| value.to_str().ok()),
+        );
 
         if soft_redirect_enabled
             && upstream_response.status().is_redirection()
@@ -139,6 +145,24 @@ fn upstream_authority(config: &Config) -> String {
     } else {
         format!("{host}:{}", config.upstream_port)
     }
+}
+
+/// Host header sent upstream: preserve the client's. Upstreams route vhosts
+/// and run origin checks against it — herdr-web-ui's sameOrigin CSRF guard
+/// compares the browser's Origin against the Host it receives, so rewriting
+/// Host to the upstream authority made every state-changing browser request
+/// through the public vhost fail with 403 invalid_origin (found 2026-10-14
+/// when wakeproxy's upstream moved to makemake's herdr-web-ui). Only clients
+/// that sent no Host at all (HTTP/1.0-style) get the upstream authority.
+fn resolve_upstream_host(headers: &HeaderMap, config: &Config) -> HeaderValue {
+    headers
+        .get(HOST)
+        .cloned()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            HeaderValue::from_str(&upstream_authority(config))
+                .unwrap_or(HeaderValue::from_static("upstream"))
+        })
 }
 
 fn apply_forwarded_headers(headers: &mut HeaderMap, client_ip: IpAddr, trust_incoming: bool) {
@@ -251,12 +275,16 @@ fn is_upgrade_request(headers: &HeaderMap) -> bool {
             .unwrap_or(false)
 }
 
-fn rewrite_upstream_redirect_location(headers: &mut HeaderMap, config: &Config) {
+fn rewrite_upstream_redirect_location(
+    headers: &mut HeaderMap,
+    config: &Config,
+    client_host: Option<&str>,
+) {
     let Some(location) = headers.get(LOCATION).and_then(|value| value.to_str().ok()) else {
         return;
     };
 
-    let Some(rewritten) = rewrite_upstream_redirect_target(location, config) else {
+    let Some(rewritten) = rewrite_upstream_redirect_target(location, config, client_host) else {
         return;
     };
 
@@ -265,30 +293,78 @@ fn rewrite_upstream_redirect_location(headers: &mut HeaderMap, config: &Config) 
     }
 }
 
-fn rewrite_upstream_redirect_target(location: &str, config: &Config) -> Option<String> {
+fn rewrite_upstream_redirect_target(
+    location: &str,
+    config: &Config,
+    client_host: Option<&str>,
+) -> Option<String> {
     let uri = location.parse::<Uri>().ok()?;
     let scheme = uri.scheme_str()?;
     let host = uri.host()?;
-    if !hosts_match(host, &config.upstream_host) {
-        return None;
-    }
 
-    let port = uri.port_u16().unwrap_or_else(|| {
-        if scheme.eq_ignore_ascii_case("https") {
-            443
-        } else {
-            80
+    if hosts_match(host, &config.upstream_host) {
+        let port = uri.port_u16().unwrap_or_else(|| {
+            if scheme.eq_ignore_ascii_case("https") {
+                443
+            } else {
+                80
+            }
+        });
+        if port == config.upstream_port {
+            return Some(
+                uri.path_and_query()
+                    .map(|value| value.as_str().to_string())
+                    .unwrap_or_else(|| "/".to_string()),
+            );
         }
-    });
-    if port != config.upstream_port {
-        return None;
     }
 
-    Some(
-        uri.path_and_query()
-            .map(|value| value.as_str().to_string())
-            .unwrap_or_else(|| "/".to_string()),
-    )
+    // The client's Host is preserved now, so an upstream that builds an
+    // absolute Location from it produces the CLIENT authority, not the
+    // upstream's. Rewrite that too: the Location would otherwise send the
+    // browser to a plain-http absolute URL on a TLS-terminated vhost.
+    if let Some(client) = client_host
+        && client_authority_matches(client, host, uri.port_u16())
+    {
+        return Some(
+            uri.path_and_query()
+                .map(|value| value.as_str().to_string())
+                .unwrap_or_else(|| "/".to_string()),
+        );
+    }
+
+    None
+}
+
+/// Does a Host-header authority ("name", "name:port", "[v6]:port") name the
+/// same host:port as a Location URI's host and raw (non-defaulted) port? A
+/// port only matches when both sides state one: "wake.example.net" sent by a
+/// TLS browser and "http://wake.example.net/x" built by the upstream name the
+/// same place even though the URI's scheme-default port would read as 80.
+fn client_authority_matches(
+    client_host: &str,
+    location_host: &str,
+    location_port: Option<u16>,
+) -> bool {
+    let (client_name, client_port) = split_authority(client_host);
+    hosts_match(client_name, location_host) && client_port == location_port
+}
+
+fn split_authority(authority: &str) -> (&str, Option<u16>) {
+    if let Some(rest) = authority.strip_prefix('[')
+        && let Some(end) = rest.find(']')
+    {
+        let port = rest[end + 1..]
+            .strip_prefix(':')
+            .and_then(|value| value.parse().ok());
+        return (&rest[..end], port);
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+            (host, port.parse().ok())
+        }
+        _ => (authority, None),
+    }
 }
 
 fn hosts_match(left: &str, right: &str) -> bool {
@@ -513,6 +589,41 @@ mod tests {
         assert_eq!(super::upstream_authority(&config), "example.test");
     }
 
+    #[test]
+    fn resolve_upstream_host_preserves_client_host() {
+        let config = build_config_with_host("upstream.test");
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("wake.example.net"));
+
+        assert_eq!(
+            super::resolve_upstream_host(&headers, &config),
+            HeaderValue::from_static("wake.example.net")
+        );
+    }
+
+    #[test]
+    fn resolve_upstream_host_falls_back_when_client_sent_none() {
+        let config = build_config_with_host("upstream.test");
+        let headers = HeaderMap::new();
+
+        assert_eq!(
+            super::resolve_upstream_host(&headers, &config),
+            HeaderValue::from_static("upstream.test:3000")
+        );
+    }
+
+    #[test]
+    fn resolve_upstream_host_falls_back_on_empty_host() {
+        let config = build_config_with_host("upstream.test");
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static(""));
+
+        assert_eq!(
+            super::resolve_upstream_host(&headers, &config),
+            HeaderValue::from_static("upstream.test:3000")
+        );
+    }
+
     #[tokio::test]
     async fn forward_returns_error_when_upstream_uri_cannot_be_built_with_trust_flag() {
         let config = std::sync::Arc::new(build_config_with_host("["));
@@ -536,15 +647,54 @@ mod tests {
     #[test]
     fn rewrite_upstream_redirect_target_rewrites_absolute_target() {
         let config = build_config_with_host("127.0.0.1");
-        let rewritten = rewrite_upstream_redirect_target("http://127.0.0.1:3000/demo?x=1", &config);
+        let rewritten =
+            rewrite_upstream_redirect_target("http://127.0.0.1:3000/demo?x=1", &config, None);
 
         assert_eq!(rewritten.as_deref(), Some("/demo?x=1"));
     }
 
     #[test]
+    fn rewrite_upstream_redirect_target_rewrites_client_authority() {
+        // Host is preserved: the upstream builds its absolute Location from the
+        // client's own authority (a TLS browser sends it without a port).
+        let config = build_config_with_host("127.0.0.1");
+        let rewritten = rewrite_upstream_redirect_target(
+            "http://wake.example.net/demo?from=absolute",
+            &config,
+            Some("wake.example.net"),
+        );
+
+        assert_eq!(rewritten.as_deref(), Some("/demo?from=absolute"));
+    }
+
+    #[test]
+    fn rewrite_upstream_redirect_target_rewrites_client_authority_with_port() {
+        let config = build_config_with_host("127.0.0.1");
+        let rewritten = rewrite_upstream_redirect_target(
+            "http://127.0.0.1:36857/demo?from=absolute",
+            &config,
+            Some("127.0.0.1:36857"),
+        );
+
+        assert_eq!(rewritten.as_deref(), Some("/demo?from=absolute"));
+    }
+
+    #[test]
+    fn rewrite_upstream_redirect_target_keeps_unrelated_client_authority() {
+        let config = build_config_with_host("127.0.0.1");
+        let rewritten = rewrite_upstream_redirect_target(
+            "http://other.example.net/demo",
+            &config,
+            Some("wake.example.net"),
+        );
+
+        assert_eq!(rewritten, None);
+    }
+
+    #[test]
     fn rewrite_upstream_redirect_target_keeps_external_target_unchanged() {
         let config = build_config_with_host("127.0.0.1");
-        let rewritten = rewrite_upstream_redirect_target("https://example.com/demo", &config);
+        let rewritten = rewrite_upstream_redirect_target("https://example.com/demo", &config, None);
 
         assert!(rewritten.is_none());
     }
