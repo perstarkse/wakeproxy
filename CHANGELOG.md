@@ -34,6 +34,7 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ### Fixed
 
+- Proxying now preserves the client's `Host` header upstream instead of rewriting it to the upstream authority. Upstreams that validate origins against the received Host (e.g. herdr-web-ui's same-origin CSRF guard) rejected every state-changing browser request through the public vhost with `403 invalid_origin`. Absolute redirect `Location` headers built by the upstream from the forwarded Host are still rewritten to relative paths (matching the client's stated host:port; a port only matches when both sides state one), so TLS-terminated vhosts are not downgraded to plain-http redirects
 - Wake status and poll responses no longer report a synthetic cycle id `0` when the upstream was found ready by direct probing; `cycle_id` is now absent in that case, and the ready cache still suppresses redundant WoL packets
 - Wake rate limiter prunes expired entries on every request so tracked IPs cannot linger after a burst (mirrors the login-attempt tracker)
 - Removed a duplicate login-attempt prune pass on every lockout check
